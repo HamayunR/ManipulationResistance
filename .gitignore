@@ -1,0 +1,17 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Experiment artefacts. Every run writes a new timestamped directory under
+# outputs/, so this must stay ignored or the repo grows on every run.
+outputs/
+
+# Secrets. README references .env for ANTHROPIC_API_KEY / OPENAI_API_KEY.
+.env
+
+# Virtualenvs (scripts/run_*_vllm.sh reference a dedicated .venv-vllm)
+.venv*/
+venv/
+
+# macOS
+.DS_Store
