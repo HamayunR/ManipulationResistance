@@ -11,7 +11,80 @@
 # experiment YAML (e.g.  agents.model: gpt-5.5).
 
 models:
-  
+
+  # Offline. Deterministic canned responses, no network call. Every result row,
+  # trace event and log line from a run using this entry is tagged mock: true.
+  mock-agent:
+    provider: mock
+    model: mock
+    max_tokens: 512
+    mock:
+      agents:
+        1: {answer: "42", confidence: 3}
+        2: {answer: "42", confidence: 3}
+        3: {answer: "42", confidence: 3}
+        4: {answer: "42", confidence: 3}
+        5: {answer: "7",  confidence: 2}
+      default: {answer: "42", confidence: 3}
+
+  # Same as mock-agent except agent 5 -- the dissenter -- inflates its reported
+  # confidence from 2 to 5. Answers are identical, so any change in routing is
+  # attributable to the report alone. Agent 5 should cross both targeted-cross
+  # gates at once: gaining source eligibility (>= 4) while losing target
+  # eligibility (<= 3).
+  mock-agent-inflated:
+    provider: mock
+    model: mock
+    max_tokens: 512
+    mock:
+      agents:
+        1: {answer: "42", confidence: 3}
+        2: {answer: "42", confidence: 3}
+        3: {answer: "42", confidence: 3}
+        4: {answer: "42", confidence: 3}
+        5: {answer: "7",  confidence: 5}
+      default: {answer: "42", confidence: 3}
+
+  # Trajectory-metric fixtures.
+  #
+  # `answer` accepts the literal tokens `correct` / `wrong`, resolved against
+  # the question at generation time (`wrong` = gold + 1, matching the numeric
+  # branch of runner.experiment._default_wrong_answer). `rounds` maps a round
+  # index to an override applied from that round onward, so a scripted
+  # transition persists to the final round. trajectory_event_rates compares
+  # round 0 against the final round only, so these are routing-independent:
+  # fixed_clique and pear_full must produce identical trajectory metrics.
+
+  # Wrong majority converted by a correct dissenter at round 2 -> w2r_rate.
+  mock-w2r:
+    provider: mock
+    model: mock
+    max_tokens: 512
+    mock:
+      agents:
+        1: {answer: wrong, confidence: 3, rounds: {2: {answer: correct, confidence: 4}}}
+        2: {answer: wrong, confidence: 3, rounds: {2: {answer: correct, confidence: 4}}}
+        3: {answer: wrong, confidence: 3, rounds: {2: {answer: correct, confidence: 4}}}
+        4: {answer: wrong, confidence: 3, rounds: {2: {answer: correct, confidence: 4}}}
+        5: {answer: correct, confidence: 4}
+      default: {answer: wrong, confidence: 3}
+
+  # Mirror: correct majority, one agent talked out of the right answer at
+  # round 2 by a confident wrong dissenter -> r2w_rate. Agent 5 sits at
+  # confidence 5 so it is a targeted-cross-eligible source while it does so.
+  mock-r2w:
+    provider: mock
+    model: mock
+    max_tokens: 512
+    mock:
+      agents:
+        1: {answer: correct, confidence: 3, rounds: {2: {answer: wrong, confidence: 4}}}
+        2: {answer: correct, confidence: 3}
+        3: {answer: correct, confidence: 3}
+        4: {answer: correct, confidence: 3}
+        5: {answer: wrong, confidence: 5}
+      default: {answer: correct, confidence: 3}
+
   # Closed-source
   gpt-5.4-nano-2026-03-17:
     provider: openai
@@ -21,7 +94,7 @@ models:
     max_tokens_param: max_completion_tokens
 
   claude-haiku-4-5:
-    provider: openai
+    provider: anthropic
     model: claude-haiku-4-5
     temperature: 0.2
     max_tokens: 512

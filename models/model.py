@@ -22,8 +22,10 @@ Conventions shared by every backend
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Any, Optional, Sequence
+import re
+from typing import Any, Mapping, Optional, Sequence
 
 from models.base import BaseLLM, Generation
 from utils.logging import get_logger
@@ -126,6 +128,310 @@ class OpenAILLM(BaseLLM):
         )
 
 
+# Offline mock backend
+#
+# Phase markers. Each is a section header that appears in exactly one template
+# in ``prompts.py``, so a prompt can be classified without extra state:
+#   "SOLUTIONS TO REVIEW"    -> CRITIQUE_GENERATION_TEMPLATE (and the malicious
+#                               variant), i.e. the critique-generation phase.
+#   "CRITIQUES YOU RECEIVED" -> ANSWER_UPDATE_TEMPLATE, i.e. the update phase.
+# Neither present -> INITIAL_ANSWER_TEMPLATE, the round-0 answer phase.
+_MARKER_CRITIQUE_PHASE = "SOLUTIONS TO REVIEW"
+_MARKER_UPDATE_PHASE = "CRITIQUES YOU RECEIVED"
+
+#: Target blocks rendered by ``runner.experiment._render_targets``.
+_RE_PARTICIPANT = re.compile(r"\[Participant (\d+)\]\s*\nAnswer:\s*(.*)")
+#: Critique blocks rendered by ``runner.experiment._render_critiques_for_agent``.
+_RE_CRITIQUE_SOURCE = re.compile(r"\[Critique from Agent (\d+)\]")
+
+#: Round counter the mock embeds in its own ``reasoning`` and reads back out of
+#: ``previous_reasoning`` on the next update turn. The prompts carry no round
+#: index, and ``models.base.BaseLLM`` requires backends to be stateless across
+#: calls, so the counter has to ride round-trip through the transcript.
+_RE_ROUND_MARKER = re.compile(r"\[mock round (\d+)\]")
+#: Own current answer, from the critique prompt's YOUR CURRENT ANSWER block.
+_RE_OWN_ANSWER = re.compile(r"YOUR CURRENT ANSWER\s*\nAnswer:\s*(.*)")
+#: Single binary arithmetic expression, for solver mode on the dummy dataset.
+_RE_ARITHMETIC = re.compile(r"(-?\d+)\s*([+\-*])\s*(-?\d+)")
+
+#: Answer tokens that are resolved against the question instead of emitted
+#: literally. Anything else in ``answer:`` is used verbatim.
+_ANSWER_CORRECT = "correct"
+_ANSWER_WRONG = "wrong"
+
+
+class MockLLM(BaseLLM):
+    """Deterministic offline backend. No network call, no randomness.
+
+    Behaviour comes entirely from the registry entry's ``mock`` block::
+
+        mock:
+          agents:
+            1: {answer: "42", confidence: 3}
+            5: {answer: "7",  confidence: 2}
+          default: {answer: "42", confidence: 3}
+
+    Output deliberately mirrors what a real backend produces rather than an
+    idealised version of it: the JSON object is wrapped in a markdown fence and
+    preceded by a prose line. ``AGENT_SYSTEM`` forbids both, real models emit
+    them anyway, and ``runner.experiment._extract_json_object`` is written to
+    tolerate them -- so emitting bare JSON would bypass the very scan the
+    parser exists to perform.
+
+    Not emitted: trailing commas. The parser has a dedicated recovery path for
+    them (``_extract_json_object``'s regex fallback); emitting them
+    unconditionally would exercise only that branch and never the fast path,
+    so that recovery stays uncovered by this backend.
+
+    Every artefact produced through this backend is tagged ``mock: true`` --
+    see ``is_mock`` and its use in :mod:`runner.experiment`.
+    """
+
+    name = "mock"
+
+    #: Sentinel read by the runner to tag results, traces and logs.
+    is_mock = True
+
+    def __init__(
+        self,
+        model: str = "mock",
+        *,
+        mock: Optional[Mapping[str, Any]] = None,
+        temperature: float = 0.0,
+        max_tokens: int = 512,
+        max_tokens_param: str = "max_tokens",
+        timeout: float = 0.0,
+        **_ignored: Any,
+    ) -> None:
+        """Store the canned per-agent responses.
+
+        Parameters
+        ----------
+        mock:
+            Mapping with ``agents`` (per-agent-id overrides) and ``default``.
+            Agent keys may be ints or strings; both are normalised to int.
+        temperature, max_tokens, timeout, max_tokens_param:
+            Accepted and ignored, so a mock entry is drop-in swappable with a
+            real provider entry.
+        """
+        block = dict(mock or {})
+        self._model = model
+        self._default = self._normalise_response(block.get("default"))
+        self._agents: dict[int, dict[str, Any]] = {}
+        for key, value in (block.get("agents") or {}).items():
+            try:
+                agent_id = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"mock.agents keys must be integer agent ids, got {key!r}"
+                ) from None
+            self._agents[agent_id] = self._normalise_response(value)
+
+    @classmethod
+    def _normalise_response(cls, value: Any) -> dict[str, Any]:
+        """Split an agent entry into its base state and its round schedule.
+
+        ``rounds`` maps a round index to an override applied from that round
+        onward (a step function, so a scripted change persists rather than
+        firing once). Omitted fields inherit from the base entry.
+        """
+        entry = dict(value or {})
+        schedule_raw = entry.pop("rounds", None) or {}
+        base = cls._normalise_state(entry)
+        schedule: dict[int, dict[str, Any]] = {}
+        for key, override in schedule_raw.items():
+            try:
+                round_idx = int(key)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"mock.agents[...].rounds keys must be integer round "
+                    f"indices, got {key!r}"
+                ) from None
+            merged = dict(entry)
+            merged.update(dict(override or {}))
+            schedule[round_idx] = cls._normalise_state(merged)
+        return {"base": base, "rounds": schedule}
+
+    @staticmethod
+    def _normalise_state(entry: Mapping[str, Any]) -> dict[str, Any]:
+        confidence = entry.get("confidence", 3)
+        try:
+            confidence = int(confidence)
+        except (TypeError, ValueError):
+            confidence = 3
+        return {
+            "answer": str(entry.get("answer", "")),
+            # Clamped to the 1-5 rubric in prompts.CONFIDENCE_RUBRIC; the
+            # runner clamps again in _clamp_confidence, this just keeps the
+            # emitted text self-consistent.
+            "confidence": max(1, min(5, confidence)),
+        }
+
+    def _state_for(self, agent_id: Optional[int], round_idx: int) -> dict[str, Any]:
+        """Resolve an agent's scripted state at ``round_idx``."""
+        spec = self._default if agent_id is None else self._agents.get(
+            int(agent_id), self._default
+        )
+        state = dict(spec["base"])
+        for scheduled_round in sorted(spec["rounds"]):
+            if round_idx >= scheduled_round:
+                state = dict(spec["rounds"][scheduled_round])
+        return state
+
+    @staticmethod
+    def _question_line(prompt: str) -> str:
+        """Best-effort extraction of the single question line from a prompt.
+
+        Scoped deliberately narrowly: ``CONFIDENCE_RUBRIC`` contains the string
+        ``"integer 1-5"``, which a naive arithmetic scan over the whole prompt
+        would read as ``1 - 5``.
+        """
+        body = prompt.split("PROBLEM\n", 1)[-1]
+        if "Problem:\n" in body:
+            body = body.split("Problem:\n", 1)[1]
+        return body.splitlines()[0] if body.splitlines() else ""
+
+    @classmethod
+    def _solve(cls, prompt: str) -> Optional[int]:
+        """Evaluate the dummy dataset's single-operator arithmetic question."""
+        match = _RE_ARITHMETIC.search(cls._question_line(prompt))
+        if not match:
+            return None
+        left, op, right = int(match.group(1)), match.group(2), int(match.group(3))
+        if op == "+":
+            return left + right
+        if op == "-":
+            return left - right
+        return left * right
+
+    @classmethod
+    def _materialise_answer(cls, token: str, prompt: str) -> str:
+        """Resolve ``correct`` / ``wrong`` against the question; else literal.
+
+        ``wrong`` is gold + 1, mirroring the numeric branch of
+        ``runner.experiment._default_wrong_answer``, so a wrong answer is
+        plausibly wrong for the question rather than an unrelated constant.
+        """
+        lowered = token.strip().lower()
+        if lowered not in (_ANSWER_CORRECT, _ANSWER_WRONG):
+            return token
+        gold = cls._solve(prompt)
+        if gold is None:
+            return token
+        return str(gold if lowered == _ANSWER_CORRECT else gold + 1)
+
+    @staticmethod
+    def _wrap(payload: dict[str, Any], lead_in: str) -> str:
+        """Render ``payload`` the way a real model tends to: prose + fence."""
+        body = json.dumps(payload, ensure_ascii=False, indent=2)
+        return f"{lead_in}\n\n```json\n{body}\n```"
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        system: Optional[str] = None,
+        agent_id: Optional[int] = None,
+    ) -> Generation:
+        """Return canned output shaped for whichever phase ``prompt`` is."""
+        if _MARKER_CRITIQUE_PHASE in prompt:
+            text = self._critique_text(prompt, agent_id)
+        elif _MARKER_UPDATE_PHASE in prompt:
+            # The prompt's own previous_reasoning carries the last round index.
+            marker = _RE_ROUND_MARKER.search(prompt)
+            round_idx = int(marker.group(1)) + 1 if marker else 1
+            own = self._state_for(agent_id, round_idx)
+            own["answer"] = self._materialise_answer(own["answer"], prompt)
+            text = self._update_text(prompt, own, agent_id, round_idx)
+        else:
+            own = self._state_for(agent_id, 0)
+            own["answer"] = self._materialise_answer(own["answer"], prompt)
+            text = self._answer_text(own, agent_id, 0)
+
+        # Synthetic but deterministic, so token-cost figures stay computable
+        # under the mock. Roughly 4 characters per token.
+        return Generation(
+            text=text,
+            prompt_tokens=len(prompt) // 4,
+            completion_tokens=len(text) // 4,
+            raw=None,
+        )
+
+    def _answer_text(
+        self, own: dict[str, Any], agent_id: Optional[int], round_idx: int
+    ) -> str:
+        return self._wrap(
+            {
+                "answer": own["answer"],
+                "confidence": own["confidence"],
+                "reasoning": (
+                    f"Mock agent {agent_id} returns its configured answer "
+                    f"{own['answer']!r} with no reasoning performed. "
+                    f"[mock round {round_idx}]"
+                ),
+            },
+            "Here is my answer.",
+        )
+
+    def _update_text(
+        self,
+        prompt: str,
+        own: dict[str, Any],
+        agent_id: Optional[int],
+        round_idx: int,
+    ) -> str:
+        # Always REJECT: the config pins one answer per agent, so accepting a
+        # critique that changed the answer would contradict determinism.
+        critique_response = {
+            source: {
+                "decision": "REJECT",
+                "reason": "Mock agent holds its configured answer.",
+            }
+            for source in _RE_CRITIQUE_SOURCE.findall(prompt)
+        }
+        return self._wrap(
+            {
+                "answer": own["answer"],
+                "confidence": own["confidence"],
+                "reasoning": (
+                    f"Mock agent {agent_id} holds scripted answer "
+                    f"{own['answer']!r} for this round. "
+                    f"[mock round {round_idx}]"
+                ),
+                "critique_response": critique_response,
+            },
+            "I have considered the critiques.",
+        )
+
+    def _critique_text(self, prompt: str, agent_id: Optional[int]) -> str:
+        # Read the agent's own current answer straight off the prompt rather
+        # than re-deriving it: the critique phase has no round marker, and the
+        # runner has already rendered the authoritative value.
+        own_match = _RE_OWN_ANSWER.search(prompt)
+        own_answer = own_match.group(1).strip() if own_match else ""
+        reviews = []
+        for target_id, target_answer in _RE_PARTICIPANT.findall(prompt):
+            agrees = target_answer.strip() == own_answer
+            reviews.append(
+                {
+                    "target": int(target_id),
+                    "step_loc": (
+                        "No error identified."
+                        if agrees
+                        else f"Target answer {target_answer.strip()!r} disagrees "
+                        f"with {own_answer!r}."
+                    ),
+                    "correction": "" if agrees else own_answer,
+                    # Derived, not fixed, so disagreement is visible to the
+                    # routing objective's targeted-cross and disagreement terms.
+                    "assessment": "Strong" if agrees else "Flawed",
+                }
+            )
+        return self._wrap({"reviews": reviews}, "Here are my reviews.")
+
+
 class AnthropicLLM(BaseLLM):
     """Anthropic Messages API backend.
 
@@ -141,6 +447,7 @@ class AnthropicLLM(BaseLLM):
         *,
         temperature: float = 0.2,
         max_tokens: int = 512,
+        max_tokens_param: str = "max_tokens",
         timeout: float = 60.0,
         **client_kwargs: Any,
     ) -> None:
@@ -153,6 +460,8 @@ class AnthropicLLM(BaseLLM):
             ``"claude-3-5-sonnet-latest"``).
         temperature, max_tokens, timeout:
             Default decoding parameters; can be overridden per call.
+        max_tokens_param:
+            Accepted for parity with the OpenAI backend; unused here.
         **client_kwargs:
             Forwarded to the ``Anthropic`` constructor for advanced setups.
         """

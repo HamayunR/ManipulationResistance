@@ -107,7 +107,11 @@ def build_llm(
     # All backends live in models.model; imports stay lazy so the third-party
     # SDKs only load on demand (so installing vllm is not required to run an
     # OpenAI experiment, and vice versa).
-    if provider == "openai":
+    if provider == "mock":
+        from models.model import MockLLM
+
+        llm = MockLLM(**config)
+    elif provider == "openai":
         from models.model import OpenAILLM
 
         llm = OpenAILLM(**config)
