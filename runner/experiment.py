@@ -373,6 +373,36 @@ def _routing_thresholds(debate_cfg: Mapping[str, Any]) -> tuple[float, float, fl
     return low_confidence_threshold, targeted_source_min, targeted_target_max
 
 
+def _routing_enumeration(debate_cfg: Mapping[str, Any]) -> tuple[bool, int, int]:
+    """Resolve the candidate-pool construction for state-aware routing.
+
+    Returns ``(enumerate_permutations, candidates, enumeration_max_factorial)``.
+
+    Exact enumeration of :math:`S_n` is opt-in, selected by either
+    ``mc_permutations: null`` or an explicit ``enumerate_permutations: true``.
+    Anything else keeps the vanilla-PEAR sampled pool (identity-seeded, drawn
+    with replacement) at ``mc_permutations`` candidates, default 100.
+    """
+    route_cfg = debate_cfg.get("routing", {}) if isinstance(debate_cfg.get("routing"), Mapping) else {}
+    sentinel = object()
+    raw = route_cfg.get("mc_permutations", sentinel)
+    if raw is sentinel:
+        raw = debate_cfg.get("mc_permutations", 100)
+    explicit = route_cfg.get(
+        "enumerate_permutations",
+        debate_cfg.get("enumerate_permutations", False),
+    )
+    enumerate_permutations = bool(explicit) or raw is None
+    candidates = 100 if raw is None else int(raw)
+    enumeration_max_factorial = int(
+        route_cfg.get(
+            "enumeration_max_factorial",
+            debate_cfg.get("enumeration_max_factorial", 5040),
+        )
+    )
+    return enumerate_permutations, candidates, enumeration_max_factorial
+
+
 def _routing_terms_normalized(debate_cfg: Mapping[str, Any]) -> bool:
     route_cfg = debate_cfg.get("routing", {}) if isinstance(debate_cfg.get("routing"), Mapping) else {}
     value = route_cfg.get(
@@ -406,11 +436,59 @@ def _robustness_component(robust_cfg: Mapping[str, Any], name: str) -> Dict[str,
     return merged
 
 
-def _adversary_id(malicious_cfg: Mapping[str, Any], n_agents: int) -> Optional[int]:
+def _adversary_candidates(malicious_cfg: Mapping[str, Any], n_agents: int) -> List[int]:
+    """Normalise ``adversary_agent_id`` into an ordered candidate list.
+
+    Accepts either a single int (the default, ``1``) or a list/tuple of ints.
+    Values are clamped into ``[1, n_agents]`` and de-duplicated with order
+    preserved; sets are sorted first so the result stays reproducible.
+    """
     if not malicious_cfg or n_agents <= 1:
+        return []
+    raw = malicious_cfg.get("adversary_agent_id", 1)
+    if isinstance(raw, (set, frozenset)):
+        values = sorted(raw)
+    elif isinstance(raw, (list, tuple)):
+        values = list(raw)
+    else:
+        values = [raw]
+
+    seen: set[int] = set()
+    candidates: List[int] = []
+    for value in values:
+        agent_id = max(1, min(n_agents, int(value)))
+        if agent_id not in seen:
+            seen.add(agent_id)
+            candidates.append(agent_id)
+    return candidates
+
+
+def _adversary_id(
+    malicious_cfg: Mapping[str, Any],
+    n_agents: int,
+    *,
+    rng: Any = None,
+) -> Optional[int]:
+    """Resolve which single agent plays the adversary.
+
+    ``adversary_agent_id`` may be a single int or a list. A list is a *candidate
+    set*: exactly one agent is drawn from it, uniformly at random when ``rng`` is
+    supplied and otherwise the first entry. This lets the adversary slot be
+    randomised across examples instead of pinned to agent 1, which under sampled
+    routing is confounded with both the identity-seeding weight and the star hub
+    (``make_base_topology("star", ...)`` places the hub at role 1).
+
+    No RNG draw is consumed when the candidate set has one element, so
+    single-int configs stay bit-identical to the previous behaviour.
+    """
+    candidates = _adversary_candidates(malicious_cfg, n_agents)
+    if not candidates:
         return None
-    agent_id = int(malicious_cfg.get("adversary_agent_id", 1))
-    return max(1, min(n_agents, agent_id))
+    if len(candidates) == 1:
+        return candidates[0]
+    if rng is None:
+        return candidates[0]
+    return candidates[rng.randrange(len(candidates))]
 
 
 def _default_wrong_answer(task: Task, example) -> str:
@@ -666,6 +744,87 @@ def _robustness_diagnostics(
     return diag
 
 
+def _targeted_cross_eligibility(
+    topo: List[List[int]],
+    current_answers: Mapping[int, Dict[str, Any]],
+    *,
+    n_agents: int,
+    source_confidence_min: float,
+    target_confidence_max: float,
+) -> Dict[str, Dict[str, Any]]:
+    """Per-agent targeted-cross source/target eligibility, for one round.
+
+    ``source_eligible`` / ``target_eligible`` are the two confidence gates in
+    ``core.topology.score_state_permutation``: an agent may act as a
+    targeted-cross *source* only at confidence >= ``source_confidence_min``,
+    and may be *targeted* only at confidence <= ``target_confidence_max``.
+    Inflating a report therefore moves an agent across both gates at once --
+    gaining broadcast eligibility while shedding scrutiny.
+
+    ``source_edges`` / ``target_edges`` count the edges on which each gate
+    actually fired, i.e. the full predicate including answer disagreement.
+
+    Pure diagnostic: derived from the already-selected topology and the
+    confidences that produced it. It does not feed the routing computation.
+    """
+    confidences = {
+        i: _clamp_confidence(current_answers[i].get("confidence", 0))
+        for i in range(1, n_agents + 1)
+    }
+    answers = {
+        i: str(current_answers[i].get("answer", "")) for i in range(1, n_agents + 1)
+    }
+    out: Dict[str, Dict[str, Any]] = {
+        str(i): {
+            "confidence": confidences[i],
+            "source_eligible": confidences[i] >= float(source_confidence_min),
+            "target_eligible": confidences[i] <= float(target_confidence_max),
+            "source_edges": 0,
+            "target_edges": 0,
+        }
+        for i in range(1, n_agents + 1)
+    }
+    for source, target in edge_list(topo):
+        answers_differ = bool(
+            answers[source] and answers[target] and answers[source] != answers[target]
+        )
+        if (
+            answers_differ
+            and confidences[source] >= float(source_confidence_min)
+            and confidences[target] <= float(target_confidence_max)
+        ):
+            out[str(source)]["source_edges"] += 1
+            out[str(target)]["target_edges"] += 1
+    return out
+
+
+def _install_mock_log_marker() -> None:
+    """Prefix every subsequent log record with ``mock=true``.
+
+    Attached to the root logger, so it covers the run-directory ``run.log``
+    and the console alike. Idempotent: re-installing does not double-prefix.
+    """
+    import logging
+
+    marker = "mock=true | "
+
+    class _MockMarkerFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            message = str(record.getMessage())
+            if not message.startswith(marker):
+                record.msg = marker + message
+                record.args = ()
+            return True
+
+    root = logging.getLogger()
+    if any(isinstance(f, _MockMarkerFilter) for f in root.filters):
+        return
+    root.addFilter(_MockMarkerFilter())
+    for handler in root.handlers:
+        if not any(isinstance(f, _MockMarkerFilter) for f in handler.filters):
+            handler.addFilter(_MockMarkerFilter())
+
+
 def safe_div_local(num: float, den: float) -> float:
     return float("nan") if den == 0 else float(num) / float(den)
 
@@ -681,7 +840,7 @@ def _select_topology(
 ) -> tuple[List[int], List[List[int]], Dict[str, Any]]:
     if mode in {"fixed", "cot", "cot_sc", "mad"}:
         perm = list(range(1, n_agents + 1))
-        info = {"candidate_count": 1, "selected_score": 0.0}
+        info = {"candidate_count": 1, "selected_score": 0.0, "routing_mode": "identity"}
     elif mode == "random_k_regular":
         degree = int(debate_cfg.get("k_regular_degree", debate_cfg.get("degree", 2)))
         topo = make_base_topology("k_regular", n_agents, rng=perm_rng, degree=degree)
@@ -690,15 +849,17 @@ def _select_topology(
             "selected_score": 0.0,
             "random_k_regular": True,
             "k_regular_degree": degree,
+            "routing_mode": "random_k_regular",
         }
         return list(range(1, n_agents + 1)), topo, info
     elif mode == "pear_subgroup":
         perm = subgroup_permutation(n_agents, perm_rng)
-        info = {"candidate_count": 1, "selected_score": 0.0}
+        info = {"candidate_count": 1, "selected_score": 0.0, "routing_mode": "subgroup"}
     else:
         alpha_targeted_cross, alpha_inf, alpha_low_conf = _routing_weights(mode, debate_cfg)
         low_conf_threshold, targeted_source_min, targeted_target_max = _routing_thresholds(debate_cfg)
         normalize_terms = _routing_terms_normalized(debate_cfg)
+        enumerate_perms, mc_candidates, enumeration_cap = _routing_enumeration(debate_cfg)
         answers = {i: current_answers[i].get("answer", "") for i in range(1, n_agents + 1)}
         confidences = {
             i: float(current_answers[i].get("confidence", 0))
@@ -706,7 +867,7 @@ def _select_topology(
         }
         if mode == "pear_uniform":
             perm = uniform_permutation(n_agents, perm_rng)
-            info = {"candidate_count": 1, "selected_score": 0.0}
+            info = {"candidate_count": 1, "selected_score": 0.0, "routing_mode": "uniform"}
         else:
             perm, info = state_aware_permutation(
                 n_agents,
@@ -722,8 +883,10 @@ def _select_topology(
                 targeted_cross_source_confidence_min=targeted_source_min,
                 targeted_cross_target_confidence_max=targeted_target_max,
                 normalize_terms=normalize_terms,
-                candidates=int(debate_cfg.get("mc_permutations", 100)),
+                candidates=mc_candidates,
                 temperature=float(debate_cfg.get("routing_temperature", 1.0)),
+                enumerate_permutations=enumerate_perms,
+                enumeration_max_factorial=enumeration_cap,
             )
     topo = apply_perm_to_topology(base_role_topo, perm)
     return perm, topo, info
@@ -837,7 +1000,11 @@ def run_one(
         robustness_cfg, "confidence_perturbation"
     )
     critique_noise_cfg = _robustness_component(robustness_cfg, "critique_noise")
-    adversary_id = _adversary_id(malicious_cfg, n_agents)
+    # Independent stream so that randomising the adversary slot cannot shift the
+    # robustness_rng draws consumed by perturbation/critique-noise components.
+    adversary_rng = seeded_rng(int(seed) * 7_919 + int(perm_seed) * 104_729 + 41)
+    adversary_candidates = _adversary_candidates(malicious_cfg, n_agents)
+    adversary_id = _adversary_id(malicious_cfg, n_agents, rng=adversary_rng)
     adversary_confidence = _clamp_confidence(malicious_cfg.get("adversary_confidence", 5))
     adversary_sticky = bool(malicious_cfg.get("sticky", True))
     adversary_answer: Optional[str] = None
@@ -854,6 +1021,10 @@ def run_one(
             "mode": mode,
             "seed": int(seed),
             "perm_seed": int(perm_seed),
+            # Which agent was adversarial, and the set it was drawn from, so a
+            # randomised adversary slot is attributable per example offline.
+            "adversary_id": adversary_id,
+            "adversary_candidates": adversary_candidates,
         }
     ]
     messages: List[Dict[str, Any]] = []
@@ -995,6 +1166,13 @@ def run_one(
                 "topology": topo,
                 "topology_hash": topology_hash(topo),
                 "in_degree": [len(row) for row in topo],
+                "targeted_cross_eligibility": _targeted_cross_eligibility(
+                    topo,
+                    previous,
+                    n_agents=n_agents,
+                    source_confidence_min=targeted_source_min,
+                    target_confidence_max=targeted_target_max,
+                ),
                 **route_info,
             }
         )
@@ -1324,6 +1502,9 @@ def run_condition(
     perm_seed_list = list(perm_seeds)
     parallel_examples = max(1, int(parallel_examples))
     condition_meta = {
+        # Tags every results row, trace event and transcript line produced by
+        # this condition, so a mock number can never be read as a real one.
+        "mock": bool(getattr(llm, "is_mock", False)),
         "mode": str(debate_cfg.get("mode", "")),
         "topology": str(debate_cfg.get("base_topology", "")),
         "base_topology": str(debate_cfg.get("base_topology", "")),
@@ -1534,6 +1715,13 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
             model_spec = model_name
         llm = build_llm(model_spec, registry=registry)
 
+    if getattr(llm, "is_mock", False):
+        _install_mock_log_marker()
+        _log.warning(
+            "MOCK PROVIDER ACTIVE - all outputs of this run are canned, not "
+            "model-generated. Results are tagged mock: true."
+        )
+
     judge_llm = None
     judge_name = cfg.get("agents", {}).get("judge_model")
     if judge_name and not random_only:
@@ -1571,6 +1759,7 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
     # Final summary
     payload = {
         "run_dir": str(paths.run_dir),
+        "mock": bool(getattr(llm, "is_mock", False)),
         "model": model_name,
         "judge_model": judge_name,
         "parallel_examples": parallel_examples,

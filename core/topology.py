@@ -11,6 +11,7 @@ state, the file system, or RNGs that they did not receive as arguments.
 
 from __future__ import annotations
 
+import itertools
 import math
 import random
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
@@ -288,21 +289,78 @@ def state_aware_permutation(
     normalize_terms: bool = True,
     candidates: int = 100,
     temperature: float = 1.0,
+    enumerate_permutations: bool = False,
+    enumeration_max_factorial: int = 5040,
 ) -> Tuple[List[int], Dict[str, Any]]:
-    """Sample a state-aware role permutation by Monte Carlo softmax."""
-    if n <= 1:
-        return [1], {"candidate_count": 1, "selected_score": 0.0}
+    """Sample a state-aware role permutation by Monte Carlo softmax.
 
-    candidates = max(1, int(candidates))
-    perms: List[List[int]] = [list(range(1, n + 1))]
-    while len(perms) < candidates:
-        perms.append(uniform_permutation(n, rng))
+    Two candidate-pool constructions are available.
+
+    ``enumerate_permutations=False`` (the default) is the original sampled pool:
+    the identity permutation, then i.i.d. uniform draws *with replacement* until
+    the pool holds ``candidates`` entries. Duplicates are kept, so multiplicity
+    acts as an importance weight in the softmax normalisation and the identity
+    carries one extra unit of weight relative to every other permutation. This
+    is the vanilla-PEAR baseline and is deliberately left bit-identical.
+
+    ``enumerate_permutations=True`` builds the pool by exact enumeration of
+    :math:`S_n`. Every permutation appears exactly once, the identity is not
+    seeded a second time, and the softmax is therefore taken over the whole
+    symmetric group -- which makes the sampled distribution the one that an
+    offline expectation over all ``n!`` permutations actually computes. Refuses
+    with :class:`ValueError` when ``n! > enumeration_max_factorial``.
+
+    The returned info dict reports ``routing_mode`` (``"sampled"`` or
+    ``"enumerated"``) and ``identity_seeded`` so every round is attributable to
+    the pool construction that produced it.
+    """
+    if n <= 1:
+        return [1], {
+            "candidate_count": 1,
+            "selected_score": 0.0,
+            "routing_mode": "enumerated" if enumerate_permutations else "sampled",
+            "identity_seeded": False,
+            "permutation_space_size": 1,
+        }
+
+    if enumerate_permutations:
+        space_size = math.factorial(n)
+        cap = int(enumeration_max_factorial)
+        if space_size > cap:
+            raise ValueError(
+                f"enumerate_permutations=True requires n! <= "
+                f"enumeration_max_factorial, but n={n} gives n!={space_size} > "
+                f"{cap}. Raise enumeration_max_factorial explicitly, or use "
+                f"sampled routing by setting mc_permutations to an integer."
+            )
+        # Exact pool over S_n. itertools yields the identity first; it is not
+        # seeded again, so no permutation carries extra softmax multiplicity.
+        perms: List[List[int]] = [list(p) for p in itertools.permutations(range(1, n + 1))]
+        routing_mode = "enumerated"
+        identity_seeded = False
+    else:
+        # Vanilla PEAR baseline: identity-seeded, sampled with replacement, no
+        # dedupe. Do not alter -- harness validation depends on this being
+        # bit-identical, including the number of RNG draws consumed.
+        candidates = max(1, int(candidates))
+        perms = [list(range(1, n + 1))]
+        while len(perms) < candidates:
+            perms.append(uniform_permutation(n, rng))
+        routing_mode = "sampled"
+        identity_seeded = True
+
+    pool_meta = {
+        "routing_mode": routing_mode,
+        "identity_seeded": identity_seeded,
+        "permutation_space_size": math.factorial(n),
+    }
 
     if not any([alpha_targeted_cross, alpha_influence, alpha_low_confidence]):
         selected = perms[rng.randrange(len(perms))]
         return selected, {
             "candidate_count": len(perms),
             "selected_score": 0.0,
+            **pool_meta,
             "objective": {
                 "alpha_targeted_cross": alpha_targeted_cross,
                 "alpha_influence": alpha_influence,
@@ -349,6 +407,7 @@ def state_aware_permutation(
     return list(selected_perm), {
         "candidate_count": len(perms),
         "selected_score": selected_score,
+        **pool_meta,
         "selected_terms": selected_terms,
         "score_min": min(item[1] for item in scored),
         "score_max": max(item[1] for item in scored),
