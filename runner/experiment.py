@@ -744,6 +744,50 @@ def _robustness_diagnostics(
     return diag
 
 
+#: Version stamp written to every machine-read output (summary.json, and every
+#: row of routing.jsonl) plus the trace's ``run_meta`` event. Bump it whenever a
+#: logged field changes meaning or disappears, so analysis code can refuse to
+#: silently mis-read an older run. Adding a purely additive field does not
+#: require a bump; renaming, removing, or redefining one does.
+#:
+#: 1 - initial versioned schema. Adds routing.jsonl; adds out_degree and
+#:     influence to the topology trace event.
+SCHEMA_VERSION = 1
+
+
+def _routing_rows(
+    trace_events: Iterable[Mapping[str, Any]],
+    *,
+    condition: str,
+    condition_meta: Mapping[str, Any],
+    example_id: str,
+    seed: Any,
+    perm_seed: Any,
+) -> List[Dict[str, Any]]:
+    """Project topology events into flat routing records.
+
+    One record per routing decision (condition x example x seed x perm_seed x
+    round). Everything a routing figure needs is already on the topology event,
+    so this is a projection plus the run coordinates -- no recomputation, and
+    no risk of drifting from what the router actually did.
+    """
+    rows: List[Dict[str, Any]] = []
+    for event in trace_events:
+        if event.get("event") != "topology":
+            continue
+        record: Dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "condition": condition,
+            "example_id": example_id,
+            "seed": seed,
+            "perm_seed": perm_seed,
+        }
+        record.update(dict(condition_meta))
+        record.update({k: v for k, v in event.items() if k != "event"})
+        rows.append(record)
+    return rows
+
+
 def _targeted_cross_eligibility(
     topo: List[List[int]],
     current_answers: Mapping[int, Dict[str, Any]],
@@ -1166,6 +1210,15 @@ def run_one(
                 "topology": topo,
                 "topology_hash": topology_hash(topo),
                 "in_degree": [len(row) for row in topo],
+                # Out-degree is what score_state_permutation actually scores
+                # (see its docstring), so record it rather than making every
+                # consumer recompute it from the adjacency.
+                "out_degree": [
+                    len(out_neighbors(topo, n_agents).get(i, []))
+                    for i in range(1, n_agents + 1)
+                ],
+                # The influence vector this decision was taken against.
+                "influence": {str(i): influence[i] for i in range(1, n_agents + 1)},
                 "targeted_cross_eligibility": _targeted_cross_eligibility(
                     topo,
                     previous,
@@ -1531,6 +1584,17 @@ def run_condition(
         for ev in trace_events:
             tracer.write({"condition": name, **condition_meta, "example": ex.id, **ev})
 
+        # Flat routing table, for the routing figures
+        for routing_row in _routing_rows(
+            trace_events,
+            condition=name,
+            condition_meta=condition_meta,
+            example_id=ex.id,
+            seed=row.get("seed"),
+            perm_seed=row.get("perm_seed"),
+        ):
+            _append_jsonl(paths.routing_file, routing_row)
+
         # Per-example metrics summary
         _append_jsonl(paths.results_file, {**row, "condition": name})
 
@@ -1661,6 +1725,9 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
         yaml.safe_dump(cfg, fh, sort_keys=False)
 
     tracer = JsonlTracer(paths.trace_file)
+    # First line of the trace, so the file is self-describing without needing
+    # summary.json alongside it.
+    tracer.write({"event": "run_meta", "schema_version": SCHEMA_VERSION})
     _log.info("Starting experiment; outputs -> %s", paths.run_dir)
 
     # Dataset
@@ -1758,6 +1825,7 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
 
     # Final summary
     payload = {
+        "schema_version": SCHEMA_VERSION,
         "run_dir": str(paths.run_dir),
         "mock": bool(getattr(llm, "is_mock", False)),
         "model": model_name,

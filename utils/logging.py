@@ -54,6 +54,11 @@ class RunPaths:
         JSONL stream of per-example results (one row per dataset example).
     transcript_file:
         JSONL stream of per-example debate transcripts (one row each).
+    routing_file:
+        JSONL stream of routing decisions, one row per round. A flat,
+        analysis-ready projection of the ``topology`` trace events joined with
+        the state that produced them, so routing figures do not require
+        parsing (and filtering) the full event trace.
     config_file:
         Resolved YAML config (copy of inputs).
     summary_file:
@@ -65,6 +70,7 @@ class RunPaths:
     trace_file: Path
     results_file: Path
     transcript_file: Path
+    routing_file: Path
     config_file: Path
     summary_file: Path
 
@@ -140,6 +146,7 @@ def setup_run_logging(
         trace_file=run_dir / "trace.jsonl",
         results_file=run_dir / "results.jsonl",
         transcript_file=run_dir / "transcripts.jsonl",
+        routing_file=run_dir / "routing.jsonl",
         config_file=run_dir / "config.yaml",
         summary_file=run_dir / "summary.json",
     )

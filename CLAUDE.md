@@ -27,6 +27,21 @@ Other branches log `identity`, `uniform`, `subgroup`, `random_k_regular`.
 Figures mixing sampled and enumerated rounds are mixing two mechanisms; split on
 `routing_mode` before aggregating.
 
+## Log schema is versioned
+
+`runner/experiment.py: SCHEMA_VERSION` is stamped into `summary.json`, every
+row of `routing.jsonl`, and the trace's first `run_meta` event. **Bump it when
+a logged field changes meaning, is renamed, or is removed** -- purely additive
+fields do not need a bump. Analysis code should assert on it rather than
+silently mis-reading an older run.
+
+`routing.jsonl` is the flat, analysis-ready routing table: one row per
+(condition x example x seed x perm_seed x round), carrying `perm`, `topology`,
+`in_degree`, `out_degree`, `influence`, `selected_terms`, `objective` and
+`targeted_cross_eligibility`. Field sets differ by `routing_mode` -- non
+state-aware modes (`identity`, `uniform`, `subgroup`, `random_k_regular`) carry
+no `objective` or `selected_terms`, so read defensively.
+
 ## Known gap: mock acceptance policy (blocks stage 5)
 
 `MockLLM` always answers `REJECT` in the update phase, so:
