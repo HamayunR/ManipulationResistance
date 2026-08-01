@@ -365,6 +365,10 @@ def state_aware_permutation(
                 "alpha_targeted_cross": alpha_targeted_cross,
                 "alpha_influence": alpha_influence,
                 "alpha_low_confidence": alpha_low_confidence,
+                # Null, not the configured value: with every alpha at zero this
+                # branch draws uniformly and never forms a softmax, so a
+                # temperature here would claim an influence it did not have.
+                "routing_temperature": None,
                 "low_confidence_threshold": low_confidence_threshold,
                 "targeted_cross_source_confidence_min": targeted_cross_source_confidence_min,
                 "targeted_cross_target_confidence_max": targeted_cross_target_confidence_max,
@@ -416,6 +420,12 @@ def state_aware_permutation(
             "alpha_targeted_cross": alpha_targeted_cross,
             "alpha_influence": alpha_influence,
             "alpha_low_confidence": alpha_low_confidence,
+            # The softmax temperature this decision was taken at, so the
+            # tau x alpha_I ablation reads both axes off the routing row
+            # instead of joining back to the run's config. Logged as
+            # configured; the softmax itself floors it at 1e-6, so a
+            # configured 0.0 is recorded as 0.0 and ran at the floor.
+            "routing_temperature": float(temperature),
             "low_confidence_threshold": low_confidence_threshold,
             "targeted_cross_source_confidence_min": targeted_cross_source_confidence_min,
             "targeted_cross_target_confidence_max": targeted_cross_target_confidence_max,

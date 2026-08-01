@@ -7,7 +7,11 @@
    under a counterfactual confidence dict (see core/topology.py: pure functions)
 3. adversary influence share vs reported confidence — needs per-agent out-degree per round
 4. clean accuracy vs token cost — needs token counts per condition
-5. heatmap over routing_temperature × alpha_influence — needs both in the resolved config
+5. heatmap over routing_temperature × alpha_influence — both are on every
+   state-aware routing row under `objective`, so read them from there rather
+   than joining back to the config (which breaks silently once tau is swept
+   across conditions within one run). `routing_temperature` is null on the
+   uniform branch, where no softmax runs.
 
 If a change would make any of these uncomputable from the logs, say so.
 
