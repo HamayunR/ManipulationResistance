@@ -845,32 +845,234 @@ def _apply_confidence_inflation(
     ]
 
 
+#: Recognised ``debate.verified_confidence.mode`` values.
+#:
+#: ``none``      - no verification. Complete no-op; the router consumes the
+#:                 reported value exactly as before.
+#: ``oracle``    - upper bound on verification quality. ``g_i = 5.0`` when the
+#:                 agent's current answer is correct, ``1.0`` otherwise. Uses
+#:                 the dataset gold answer, so it is a ceiling on what any real
+#:                 corroboration signal could achieve, not a deployable one.
+#: ``agreement`` - reserved for the label-invariant corroboration signal
+#:                 (cross-agent answer agreement). Raises NotImplementedError
+#:                 rather than silently behaving like ``none``.
+VERIFIED_CONFIDENCE_MODES = ("none", "oracle", "agreement")
+
+
+def _verified_confidence_config(debate_cfg: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Resolve ``debate.verified_confidence``.
+
+    Returns ``None`` for the no-op modes (absent, ``null``, ``mode: none``),
+    otherwise ``{"mode": ...}``.
+
+    Deliberately read from ``debate``, not from ``debate.robustness``: this is
+    a *mechanism*, not an attack. Nesting it under the robustness block would
+    tie the defence to an attack being configured, which makes the clean-run
+    cost of the defence (proposal RQ6 / figure 4) unmeasurable. A block found
+    under ``robustness`` is therefore a misplacement and raises, because
+    silently ignoring it would report the defence as free *and* useless.
+    """
+    robust = debate_cfg.get("robustness")
+    if isinstance(robust, Mapping) and "verified_confidence" in robust:
+        raise ValueError(
+            "verified_confidence is a routing mechanism, not an attack: move it "
+            "from debate.robustness.verified_confidence to "
+            "debate.verified_confidence. It must be configurable on clean runs, "
+            "where there is no robustness block at all."
+        )
+
+    block = debate_cfg.get("verified_confidence")
+    if block is None:
+        return None
+    if not isinstance(block, Mapping):
+        raise ValueError(
+            "debate.verified_confidence must be a mapping (or absent/null to "
+            f"disable it), got {type(block).__name__}"
+        )
+
+    mode = str(block.get("mode", "none")).strip().lower()
+    if mode not in VERIFIED_CONFIDENCE_MODES:
+        raise ValueError(
+            f"Unknown debate.verified_confidence.mode {block.get('mode')!r}; "
+            f"expected one of {list(VERIFIED_CONFIDENCE_MODES)}"
+        )
+    if mode == "none":
+        return None
+    return {"mode": mode}
+
+
+def _corroboration_scores(
+    states: Mapping[int, Mapping[str, Any]],
+    *,
+    n_agents: int,
+    mode: str,
+    is_correct: Callable[[str], bool],
+) -> Dict[int, float]:
+    """Per-agent corroboration score ``g_i``, on the confidence scale.
+
+    ``g_i`` is the ceiling that verification places on a self-report: the
+    router scores ``min(reported, g_i)``, so an agent can talk itself *down*
+    but never above the level the evidence supports (Theorem 1).
+
+    Must return a score for every agent. A provider that omits one is a bug,
+    and every possible default is worse than failing: 0.0 would silently
+    suppress the agent to the floor and look like a spectacularly effective
+    defence, while a high default would silently disable the defence for that
+    agent. The caller therefore rejects incomplete maps.
+    """
+    if mode == "oracle":
+        return {
+            agent_id: (
+                float(CONFIDENCE_MAX)
+                if bool(is_correct(str((states.get(agent_id) or {}).get("answer", ""))))
+                else float(CONFIDENCE_MIN)
+            )
+            for agent_id in range(1, n_agents + 1)
+        }
+    if mode == "agreement":
+        raise NotImplementedError(
+            "verified_confidence mode 'agreement' is not implemented yet. It "
+            "needs a label-invariant corroboration signal (cross-agent answer "
+            "agreement); until then use 'oracle' for the upper bound or 'none'."
+        )
+    raise ValueError(f"Unknown verified_confidence mode {mode!r}")
+
+
+def _apply_verified_confidence(
+    current: Dict[int, Dict[str, Any]],
+    *,
+    phase: str,
+    round_idx: int,
+    cfg: Optional[Mapping[str, Any]],
+    n_agents: int,
+    is_correct: Callable[[str], bool],
+) -> List[Dict[str, Any]]:
+    """Clamp every agent's routing confidence to ``min(reported, g_i)``.
+
+    Applied to all agents, after any confidence attack and immediately before
+    the value can enter routing, so ``confidence`` -- the field the router
+    reads -- becomes the *verified* value while the pre-clamp report is
+    preserved on the state as ``reported_confidence``.
+
+    Confidence provenance after this runs, per agent:
+
+    ``clean_confidence``    what the model itself reported
+    ``reported_confidence`` what the agent reports after any attack
+    ``g_i``                 corroboration ceiling
+    ``verified_confidence`` min(reported, g_i) -- what the router scores
+    ``confidence``          == verified_confidence (router-facing alias)
+
+    Returns the trace events to append (empty when verification is off).
+    """
+    if not cfg:
+        return []
+
+    mode = str(cfg["mode"])
+    scores = _corroboration_scores(
+        current, n_agents=n_agents, mode=mode, is_correct=is_correct
+    )
+    missing = [i for i in range(1, n_agents + 1) if i not in scores]
+    if missing:
+        raise ValueError(
+            f"verified_confidence mode {mode!r} returned no g_i for agents "
+            f"{missing}. A missing corroboration score is never defaulted -- "
+            "0.0 would silently floor the agent and any high default would "
+            "silently disable the defence."
+        )
+
+    entries: List[Dict[str, Any]] = []
+    for agent_id in range(1, n_agents + 1):
+        state = current[agent_id]
+        reported = _clamp_confidence(state["confidence"])
+        g_i = float(scores[agent_id])
+        verified = min(float(reported), g_i)
+
+        state["reported_confidence"] = reported
+        state["g_i"] = g_i
+        state["verified_confidence"] = verified
+        # The router reads `confidence`; verification is what it now means.
+        state["confidence"] = _clamp_confidence(verified)
+
+        entries.append(
+            {
+                "agent_id": agent_id,
+                "clean_confidence": float(state["clean_confidence"]),
+                "reported_confidence": float(reported),
+                "g_i": g_i,
+                "verified_confidence": float(verified),
+                "clamped": verified < float(reported),
+            }
+        )
+
+    return [
+        {
+            "event": "verified_confidence",
+            "phase": phase,
+            "round": round_idx,
+            "mode": mode,
+            "agents": entries,
+        }
+    ]
+
+
 def _confidence_log_maps(
     states: Mapping[int, Mapping[str, Any]],
     n_agents: int,
-) -> tuple[Dict[str, float], Dict[str, float]]:
-    """Build the complete ``(clean_confidence, reported_confidence)`` maps.
+    *,
+    verified_active: bool = False,
+) -> tuple[
+    Dict[str, float],
+    Dict[str, float],
+    Optional[Dict[str, float]],
+    Optional[Dict[str, float]],
+]:
+    """Build the complete per-agent confidence maps for one routing decision.
 
-    Both cover every agent id, so analysis code never has to infer which
-    confidence the router consumed. Built defensively and then checked, so a
-    future state-construction path that forgets provenance fails loudly here
-    instead of writing a routing row with a silent hole in it.
+    Returns ``(clean, reported, g_i, verified)``. ``g_i`` and ``verified`` are
+    ``None`` -- not an empty or partial map -- when verification is inactive,
+    so "no verification ran" is never confusable with "every score was zero".
+
+    When verification is inactive the router consumes the reported value
+    directly, so ``reported`` falls back to ``confidence``: that is an identity
+    in that case, not a guess. When verification *is* active, a state missing
+    its pre-clamp ``reported_confidence`` is a bug and raises.
+
+    Every map covers every agent id. Built defensively and then checked, so a
+    state-construction path that forgets provenance fails loudly here instead
+    of writing a routing row with a silent hole in it.
     """
     clean: Dict[str, float] = {}
     reported: Dict[str, float] = {}
+    g_scores: Dict[str, float] = {}
+    verified: Dict[str, float] = {}
+
     for agent_id in range(1, n_agents + 1):
         state = states.get(agent_id) or {}
+        key = str(agent_id)
         if "clean_confidence" in state:
-            clean[str(agent_id)] = float(state["clean_confidence"])
-        if "confidence" in state:
-            reported[str(agent_id)] = float(state["confidence"])
+            clean[key] = float(state["clean_confidence"])
+        if verified_active:
+            if "reported_confidence" in state:
+                reported[key] = float(state["reported_confidence"])
+            if "g_i" in state:
+                g_scores[key] = float(state["g_i"])
+            if "verified_confidence" in state:
+                verified[key] = float(state["verified_confidence"])
+        elif "confidence" in state:
+            reported[key] = float(state["confidence"])
 
     expected_ids = {str(i) for i in range(1, n_agents + 1)}
     if set(clean) != expected_ids:
         raise ValueError("Incomplete clean_confidence routing log")
     if set(reported) != expected_ids:
         raise ValueError("Incomplete reported_confidence routing log")
-    return clean, reported
+    if not verified_active:
+        return clean, reported, None, None
+    if set(g_scores) != expected_ids:
+        raise ValueError("Incomplete g_i routing log")
+    if set(verified) != expected_ids:
+        raise ValueError("Incomplete verified_confidence routing log")
+    return clean, reported, g_scores, verified
 
 
 def _apply_critique_noise(
@@ -1015,7 +1217,12 @@ def _robustness_diagnostics(
 #:
 #: 1 - initial versioned schema. Adds routing.jsonl; adds out_degree and
 #:     influence to the topology trace event.
-SCHEMA_VERSION = 1
+#: 2 - verified confidence. `reported_confidence` no longer necessarily equals
+#:     the value the router scored: under debate.verified_confidence the router
+#:     scores `verified_confidence` = min(reported, g_i) instead. Analysis that
+#:     read `reported_confidence` as the routing input is correct only for
+#:     v1 runs and for v2 runs with `verified_confidence_mode: none`.
+SCHEMA_VERSION = 2
 
 
 def _routing_rows(
@@ -1311,6 +1518,9 @@ def run_one(
     # example, before any generation, so a malformed config fails before it
     # burns tokens. None when inactive.
     confidence_inflation_cfg = _confidence_inflation_config(robustness_cfg, n_agents)
+    # Defence socket. Independent of the robustness block on purpose, so it can
+    # also run on a clean debate to price the defence. None when mode is none.
+    verified_confidence_cfg = _verified_confidence_config(debate_cfg)
     # Independent stream so that randomising the adversary slot cannot shift the
     # robustness_rng draws consumed by perturbation/critique-noise components.
     adversary_rng = seeded_rng(int(seed) * 7_919 + int(perm_seed) * 104_729 + 41)
@@ -1465,6 +1675,17 @@ def run_one(
             is_correct=is_correct,
         )
     )
+    # Last write to `confidence` before the first routing decision reads it.
+    trace_events.extend(
+        _apply_verified_confidence(
+            current,
+            phase="initial",
+            round_idx=0,
+            cfg=verified_confidence_cfg,
+            n_agents=n_agents,
+            is_correct=is_correct,
+        )
+    )
 
     answer_history.append({i: current[i]["answer"] for i in range(1, n_agents + 1)})
     confidence_history.append({i: current[i]["confidence"] for i in range(1, n_agents + 1)})
@@ -1497,8 +1718,13 @@ def run_one(
         )
         # Raises rather than logging a partial map: a routing row that cannot
         # say which confidence the router consumed is not analysable.
-        clean_confidence_log, reported_confidence_log = _confidence_log_maps(
-            previous, n_agents
+        (
+            clean_confidence_log,
+            reported_confidence_log,
+            g_i_log,
+            verified_confidence_log,
+        ) = _confidence_log_maps(
+            previous, n_agents, verified_active=bool(verified_confidence_cfg)
         )
         trace_events.append(
             {
@@ -1511,13 +1737,22 @@ def run_one(
                 "answers": {
                     str(i): previous[i]["answer"] for i in range(1, n_agents + 1)
                 },
-                # Both confidence views for every agent. `reported_confidence`
-                # is what this routing decision actually scored;
-                # `clean_confidence` is what the models reported. They are
-                # equal for every agent under no attack, and differ only for
-                # attacked agents.
+                # Every confidence view for every agent, so no analysis has to
+                # infer which value a decision consumed:
+                #   clean_confidence    what the model itself reported
+                #   reported_confidence what the agent reports post-attack
+                #   g_i                 corroboration ceiling, null if no
+                #                       verification ran
+                #   verified_confidence min(reported, g_i), null likewise
+                # The router scores verified_confidence when verification is
+                # active and reported_confidence otherwise.
                 "clean_confidence": clean_confidence_log,
                 "reported_confidence": reported_confidence_log,
+                "g_i": g_i_log,
+                "verified_confidence": verified_confidence_log,
+                "verified_confidence_mode": (
+                    verified_confidence_cfg["mode"] if verified_confidence_cfg else "none"
+                ),
                 "confidence_inflation_agent_ids": list(
                     confidence_inflation_cfg["agent_ids"]
                 )
@@ -1742,6 +1977,17 @@ def run_one(
                 phase="update",
                 round_idx=round_idx,
                 cfg=confidence_inflation_cfg,
+                is_correct=is_correct,
+            )
+        )
+        # Last write to `confidence` before round round_idx + 1 routes on it.
+        trace_events.extend(
+            _apply_verified_confidence(
+                current,
+                phase="update",
+                round_idx=round_idx,
+                cfg=verified_confidence_cfg,
+                n_agents=n_agents,
                 is_correct=is_correct,
             )
         )

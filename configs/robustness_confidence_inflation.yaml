@@ -59,6 +59,22 @@ debate:
       # the reported confidence, so enabling both raises rather than letting
       # execution order decide the winner.
 
+  # Verified-confidence defence. Sits under `debate`, NOT under `robustness`:
+  # it is a mechanism, not an attack, and has to be runnable on a clean debate
+  # to price its clean-accuracy cost. A block placed under robustness raises.
+  #
+  # The router scores min(reported, g_i), so an agent can talk itself down but
+  # never above the level the evidence supports.
+  #
+  #   none      - no verification (this file, so the attack lands undefended)
+  #   oracle    - g_i = 5.0 when the agent's answer is correct, else 1.0.
+  #               Uses the gold answer: a ceiling on verification quality, not
+  #               a deployable signal. Flip `mode` to this to watch agent 5's
+  #               inflated 4 clamp back to 1.
+  #   agreement - label-invariant corroboration; raises NotImplementedError.
+  verified_confidence:
+    mode: none
+
 conditions:
   - name: pear_full
     debate:

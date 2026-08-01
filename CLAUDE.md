@@ -42,14 +42,29 @@ silently mis-reading an older run.
 state-aware modes (`identity`, `uniform`, `subgroup`, `random_k_regular`) carry
 no `objective` or `selected_terms`, so read defensively.
 
-## Reported vs clean confidence
+## The four confidence views
 
-Every routing row carries two complete per-agent confidence maps.
-`reported_confidence` is what the router actually scored; `clean_confidence` is
-what the model itself reported. They are equal for every agent unless a
-confidence-reporting attack is active, and differ only for attacked agents.
-Both are validated for completeness before the event is written -- a partial
-map raises rather than producing an unanalysable row.
+Every routing row carries complete per-agent maps for each stage of the
+confidence pipeline:
+
+- `clean_confidence` -- what the model itself reported.
+- `reported_confidence` -- what the agent reports after any attack.
+- `g_i` -- the corroboration ceiling, `null` when no verification ran.
+- `verified_confidence` -- `min(reported, g_i)`, `null` likewise.
+
+**The router scores `verified_confidence` when `verified_confidence_mode` is
+not `none`, and `reported_confidence` otherwise.** Before verification existed
+these two were identical, so v1 analysis that reads `reported_confidence` as
+the routing input is correct only for v1 runs and for v2 runs with
+`verified_confidence_mode: none`. This is why SCHEMA_VERSION is 2.
+
+All maps are validated for completeness before the event is written -- a
+partial map raises rather than producing an unanalysable row. `g_i` and
+`verified_confidence` are `null`, never `{}` or zeros, when verification is
+off, so "no verification ran" cannot be confused with "every score was zero".
+A missing `g_i` while verification is *on* raises: 0.0 would silently floor the
+agent and look like a spectacular defence, any high default would silently
+disable it.
 
 Rows also carry `confidence_inflation_agent_ids` / `_mode` / `_value`, so no
 analysis has to infer which confidence a decision consumed. **Never read
@@ -63,6 +78,25 @@ construction (enabling both raises): the pre-existing `confidence_perturbation`
 (scoped to explicit `agent_ids`, leaves answers/reasoning/critiques untouched).
 The latter's `fixed_report` mode *replaces* the report with the configured
 value -- despite the name it is not monotone, 5 -> 4 is a legal outcome.
+
+## Verified confidence is a mechanism, not an attack
+
+`debate.verified_confidence` sits under `debate`, deliberately *not* under
+`debate.robustness`: it must be runnable on a clean debate to price its
+clean-accuracy cost (RQ6 / figure 4). A block found under `robustness` raises
+rather than being ignored. Modes: `none` (no-op), `oracle` (`g_i` = 5.0 if the
+agent's answer is correct else 1.0 -- a *ceiling* on verification quality,
+since it reads the gold answer), `agreement` (raises NotImplementedError; it
+must not silently degrade to `none`).
+
+Applied to every agent, after any confidence attack and immediately before the
+value can enter routing. `confidence_history` in results.jsonl therefore
+records the verified value once verification is on.
+
+**`oracle` is an upper bound, not an attacker or a deployable defence.** Both
+it and the `targeted_wrong` attack mode read the gold answer, so they bound
+what verification could achieve and what an adversary could know. Neither is
+realistic on its own.
 
 ## Known gap: mock acceptance policy (blocks stage 5)
 
