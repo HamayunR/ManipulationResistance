@@ -208,6 +208,10 @@ def aggregate_diagnostics(rows: Iterable[Mapping[str, Any]]) -> Dict[str, float]
         "adversary_wrong_adoption_rate",
         "non_adversary_r2w_rate_under_attack",
         "attack_success_rate",
+        # Mean count of model outputs per example from which no JSON object
+        # could be recovered. Non-zero means the parser is silently falling
+        # back, so any metric downstream of it is suspect.
+        "parse_failures",
     ]
     vals: Dict[str, List[float]] = {key: [] for key in keys}
     for row in rows:

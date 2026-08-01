@@ -60,7 +60,7 @@ from prompts import (
 from utils.budget import Budget
 from utils.logging import RunPaths, get_logger, setup_run_logging
 from utils.seed import seeded_rng, set_global_seeds
-from utils.tracing import JsonlTracer
+from utils.tracing import JsonlTracer, dumps_safe
 
 _log = get_logger("runner")
 
@@ -157,9 +157,25 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
             return {}
 
 
+def _json_object_missing(text: str) -> bool:
+    """True when a non-empty model output yielded no JSON object.
+
+    Distinguishes a genuine parse failure from an empty completion: an empty
+    string is a generation problem, not a formatting one.
+    """
+    return bool(str(text or "").strip()) and not _extract_json_object(text)
+
+
+#: Inclusive bounds of the reported-confidence rubric (see prompts.CONFIDENCE_RUBRIC).
+#: Shared by the lenient clamp below and by the strict validators, which reject
+#: out-of-range values instead of silently clamping them.
+CONFIDENCE_MIN = 1
+CONFIDENCE_MAX = 5
+
+
 def _clamp_confidence(value: Any) -> int:
     try:
-        return max(1, min(5, int(round(float(value)))))
+        return max(CONFIDENCE_MIN, min(CONFIDENCE_MAX, int(round(float(value)))))
     except (TypeError, ValueError):
         return 3
 
@@ -169,9 +185,16 @@ def _parse_answer_payload(text: str, parse_answer: Callable[[str], str]) -> Dict
     answer = str(payload.get("answer") or "").strip()
     if not answer:
         answer = parse_answer(text)
+    confidence = _clamp_confidence(payload.get("confidence", 3))
     return {
         "answer": answer,
-        "confidence": _clamp_confidence(payload.get("confidence", 3)),
+        # ``confidence`` is the *reported* value: what the router consumes, and
+        # what a confidence-reporting attack overwrites. ``clean_confidence``
+        # is the model's own report, captured here -- before any robustness
+        # component can touch it -- so provenance is set for every agent on
+        # every payload rather than only for attacked ones.
+        "confidence": confidence,
+        "clean_confidence": confidence,
         "reasoning": str(payload.get("reasoning") or text).strip(),
         "critique_response": _normalize_critique_response(
             payload.get("critique_response") or {}
@@ -610,6 +633,246 @@ def _apply_confidence_perturbation(
     }
 
 
+#: Recognised ``confidence_inflation.mode`` values.
+#:
+#: ``fixed_report``   - gold-blind. Replaces the report with the configured
+#:                      value for every listed agent. Despite the component
+#:                      name this is a *replacement*, not a monotone increase:
+#:                      it takes 2 -> 4, but equally 5 -> 4.
+#: ``targeted_wrong`` - oracle-targeted stress test. Replaces the report only
+#:                      when the agent's current answer is incorrect according
+#:                      to the dataset's gold answer. This is NOT a realistic
+#:                      strategic agent -- a real one cannot see the gold
+#:                      answer -- it isolates the worst case for the router.
+CONFIDENCE_INFLATION_MODES = ("fixed_report", "targeted_wrong")
+
+
+def _confidence_inflation_config(
+    robust_cfg: Mapping[str, Any],
+    n_agents: int,
+) -> Optional[Dict[str, Any]]:
+    """Resolve and validate ``robustness.confidence_inflation``.
+
+    Returns ``None`` when the component is inactive, otherwise a dict with
+    validated ``agent_ids``, ``mode`` and ``value``.
+
+    Deliberately does *not* go through :func:`_robustness_component`: that
+    helper merges the whole ``robustness`` block into each component, so keys
+    written at the top level leak into siblings (``rate`` and ``strategy``
+    collide between the existing components, with different defaults and
+    different vocabularies). This resolver reads the nested block only, so a
+    stray top-level ``mode`` or ``value`` cannot silently configure the attack.
+
+    Inactive (complete no-op) when the ``confidence_inflation`` block is
+    absent, ``null``, or carries ``enabled: false``. An explicit ``enabled``
+    always wins over ``robustness.type``; with no ``enabled`` key the component
+    activates when ``type`` is ``confidence_inflation`` or ``all``.
+
+    Every other malformed configuration raises :class:`ValueError` rather than
+    degrading to a no-op or clamping into range, so an unrunnable attack fails
+    at startup instead of producing a clean-looking run.
+    """
+    if not robust_cfg:
+        return None
+
+    sentinel = object()
+    nested = robust_cfg.get("confidence_inflation", sentinel)
+    if nested is sentinel or nested is None:
+        return None
+    if not isinstance(nested, Mapping):
+        raise ValueError(
+            "robustness.confidence_inflation must be a mapping (or absent/null "
+            f"to disable it), got {type(nested).__name__}"
+        )
+
+    if "enabled" in nested:
+        enabled = bool(nested.get("enabled"))
+    else:
+        enabled = str(robust_cfg.get("type", "")).strip().lower() in {
+            "confidence_inflation",
+            "all",
+        }
+    if not enabled:
+        return None
+
+    # Execution order would otherwise decide which component's confidence wins.
+    if _robustness_component(robust_cfg, "confidence_perturbation"):
+        raise ValueError(
+            "robustness.confidence_perturbation and "
+            "robustness.confidence_inflation are both active; they both write "
+            "the reported confidence, so execution order would decide which "
+            "value the router sees. Enable exactly one."
+        )
+
+    raw_ids = nested.get("agent_ids", sentinel)
+    if raw_ids is sentinel or raw_ids is None:
+        raise ValueError(
+            "robustness.confidence_inflation.agent_ids is required when the "
+            "component is enabled; there is no default set of attacked agents"
+        )
+    if isinstance(raw_ids, (str, bytes)) or not isinstance(raw_ids, (list, tuple, set, frozenset)):
+        raise ValueError(
+            "robustness.confidence_inflation.agent_ids must be a list of agent "
+            f"ids, got {raw_ids!r}"
+        )
+    ordered = sorted(raw_ids) if isinstance(raw_ids, (set, frozenset)) else list(raw_ids)
+    if not ordered:
+        raise ValueError(
+            "robustness.confidence_inflation.agent_ids is empty; an enabled "
+            "attack must name at least one agent"
+        )
+
+    agent_ids: List[int] = []
+    for entry in ordered:
+        if isinstance(entry, bool) or not isinstance(entry, int):
+            raise ValueError(
+                "robustness.confidence_inflation.agent_ids entries must be "
+                f"integers, got {entry!r}"
+            )
+        if not (1 <= entry <= n_agents):
+            raise ValueError(
+                f"robustness.confidence_inflation.agent_ids contains {entry}, "
+                f"which is outside the valid range 1..{n_agents} for this "
+                "condition. Ids are not clamped -- fix the config."
+            )
+        if entry not in agent_ids:
+            agent_ids.append(entry)
+
+    raw_mode = nested.get("mode", sentinel)
+    if raw_mode is sentinel or raw_mode is None:
+        raise ValueError(
+            "robustness.confidence_inflation.mode is required when the "
+            f"component is enabled; choose one of {list(CONFIDENCE_INFLATION_MODES)}"
+        )
+    mode = str(raw_mode).strip().lower()
+    if mode not in CONFIDENCE_INFLATION_MODES:
+        raise ValueError(
+            f"Unknown robustness.confidence_inflation.mode {raw_mode!r}; "
+            f"expected one of {list(CONFIDENCE_INFLATION_MODES)}"
+        )
+
+    raw_value = nested.get("value", sentinel)
+    if raw_value is sentinel or raw_value is None:
+        raise ValueError(
+            "robustness.confidence_inflation.value is required when the "
+            "component is enabled"
+        )
+    if isinstance(raw_value, bool) or not isinstance(raw_value, int):
+        raise ValueError(
+            "robustness.confidence_inflation.value must be an integer in "
+            f"{CONFIDENCE_MIN}..{CONFIDENCE_MAX}, got {raw_value!r}"
+        )
+    if not (CONFIDENCE_MIN <= raw_value <= CONFIDENCE_MAX):
+        raise ValueError(
+            f"robustness.confidence_inflation.value {raw_value} is outside the "
+            f"confidence rubric {CONFIDENCE_MIN}..{CONFIDENCE_MAX}. Values are "
+            "not clamped -- fix the config."
+        )
+
+    return {"agent_ids": agent_ids, "mode": mode, "value": int(raw_value)}
+
+
+def _apply_confidence_inflation(
+    current: Dict[int, Dict[str, Any]],
+    *,
+    phase: str,
+    round_idx: int,
+    cfg: Optional[Mapping[str, Any]],
+    is_correct: Callable[[str], bool],
+) -> List[Dict[str, Any]]:
+    """Overwrite the *reported* confidence of explicitly listed agents.
+
+    Touches ``confidence`` and nothing else: answers, reasoning, critique
+    responses and every unlisted agent are left exactly as the model produced
+    them, so any downstream change is attributable to the report alone.
+    ``clean_confidence`` is never written here -- it is set once at parse time
+    (:func:`_parse_answer_payload`) and is the provenance record of what the
+    model actually reported.
+
+    Independent of the routing method by construction: it mutates debate state
+    only, so the same attack applies unchanged to a non-PEAR debate.
+
+    Returns the trace events to append (empty when the component is inactive).
+    """
+    if not cfg:
+        return []
+
+    mode = str(cfg["mode"])
+    value = int(cfg["value"])
+    agent_ids = list(cfg["agent_ids"])
+
+    changes: List[Dict[str, Any]] = []
+    for agent_id in agent_ids:
+        state = current.get(agent_id)
+        if state is None:
+            raise ValueError(
+                f"confidence_inflation targets agent {agent_id}, which has no "
+                "state in this round"
+            )
+        clean = _clamp_confidence(state["clean_confidence"])
+        reported = _clamp_confidence(state.get("confidence", clean))
+        if mode == "fixed_report":
+            new = value
+        elif mode == "targeted_wrong":
+            # Oracle branch: only agents that are *currently wrong* overclaim.
+            correct = bool(is_correct(str(state.get("answer", ""))))
+            new = reported if correct else value
+        else:  # pragma: no cover - _confidence_inflation_config validates first
+            raise ValueError(f"Unknown confidence_inflation mode {mode!r}")
+        state["confidence"] = new
+        # Every configured agent is reported, including targeted_wrong agents
+        # that were left alone, so the log shows the attack fired and chose
+        # not to act rather than looking like it never ran.
+        changes.append(
+            {
+                "agent_id": agent_id,
+                "clean_confidence": clean,
+                "reported_confidence": new,
+                "changed": clean != new,
+            }
+        )
+
+    return [
+        {
+            "event": "robustness_confidence_inflation",
+            "phase": phase,
+            "round": round_idx,
+            "mode": mode,
+            "agent_ids": agent_ids,
+            "value": value,
+            "changes": changes,
+        }
+    ]
+
+
+def _confidence_log_maps(
+    states: Mapping[int, Mapping[str, Any]],
+    n_agents: int,
+) -> tuple[Dict[str, float], Dict[str, float]]:
+    """Build the complete ``(clean_confidence, reported_confidence)`` maps.
+
+    Both cover every agent id, so analysis code never has to infer which
+    confidence the router consumed. Built defensively and then checked, so a
+    future state-construction path that forgets provenance fails loudly here
+    instead of writing a routing row with a silent hole in it.
+    """
+    clean: Dict[str, float] = {}
+    reported: Dict[str, float] = {}
+    for agent_id in range(1, n_agents + 1):
+        state = states.get(agent_id) or {}
+        if "clean_confidence" in state:
+            clean[str(agent_id)] = float(state["clean_confidence"])
+        if "confidence" in state:
+            reported[str(agent_id)] = float(state["confidence"])
+
+    expected_ids = {str(i) for i in range(1, n_agents + 1)}
+    if set(clean) != expected_ids:
+        raise ValueError("Incomplete clean_confidence routing log")
+    if set(reported) != expected_ids:
+        raise ValueError("Incomplete reported_confidence routing log")
+    return clean, reported
+
+
 def _apply_critique_noise(
     critiques: List[Dict[str, Any]],
     *,
@@ -1044,11 +1307,27 @@ def run_one(
         robustness_cfg, "confidence_perturbation"
     )
     critique_noise_cfg = _robustness_component(robustness_cfg, "critique_noise")
+    # Scoped confidence-reporting attack. Resolved (and validated) once per
+    # example, before any generation, so a malformed config fails before it
+    # burns tokens. None when inactive.
+    confidence_inflation_cfg = _confidence_inflation_config(robustness_cfg, n_agents)
     # Independent stream so that randomising the adversary slot cannot shift the
     # robustness_rng draws consumed by perturbation/critique-noise components.
     adversary_rng = seeded_rng(int(seed) * 7_919 + int(perm_seed) * 104_729 + 41)
     adversary_candidates = _adversary_candidates(malicious_cfg, n_agents)
     adversary_id = _adversary_id(malicious_cfg, n_agents, rng=adversary_rng)
+    # List form, so per-round events keep a stable shape once the harness
+    # supports more than one adversary. Empty when robustness is disabled.
+    adversary_ids = [adversary_id] if adversary_id is not None else []
+    # Stamped onto every per-round event so a routing/critique/update record is
+    # self-locating without joining back to the results row.
+    round_meta: Dict[str, Any] = {
+        "seed": int(seed),
+        "perm_seed": int(perm_seed),
+        "adversary_ids": adversary_ids,
+    }
+    # Count of model outputs from which no JSON object could be recovered.
+    parse_failures = 0
     adversary_confidence = _clamp_confidence(malicious_cfg.get("adversary_confidence", 5))
     adversary_sticky = bool(malicious_cfg.get("sticky", True))
     adversary_answer: Optional[str] = None
@@ -1125,6 +1404,7 @@ def run_one(
     answer_history: List[Dict[int, str]] = []
     confidence_history: List[Dict[int, int]] = []
     for agent_id, gen in enumerate(gens, start=1):
+        parse_failures += int(_json_object_missing(gen.text))
         parsed = _parse_answer_payload(gen.text, task.parse_answer)
         if adversary_id is not None and agent_id == adversary_id:
             adversary_answer, event = _apply_malicious_payload(
@@ -1173,6 +1453,19 @@ def run_one(
         trace_events.extend(perturb_events)
         _add_robustness_stats(robustness_stats, perturb_stats)
 
+    # Applied after the genuine reports are stored and before the initial
+    # confidence history is recorded, so the first routing decision consumes
+    # the attacked reports.
+    trace_events.extend(
+        _apply_confidence_inflation(
+            current,
+            phase="initial",
+            round_idx=0,
+            cfg=confidence_inflation_cfg,
+            is_correct=is_correct,
+        )
+    )
+
     answer_history.append({i: current[i]["answer"] for i in range(1, n_agents + 1)})
     confidence_history.append({i: current[i]["confidence"] for i in range(1, n_agents + 1)})
 
@@ -1202,10 +1495,40 @@ def run_one(
             influence=influence,
             debate_cfg=debate_cfg,
         )
+        # Raises rather than logging a partial map: a routing row that cannot
+        # say which confidence the router consumed is not analysable.
+        clean_confidence_log, reported_confidence_log = _confidence_log_maps(
+            previous, n_agents
+        )
         trace_events.append(
             {
                 "event": "topology",
                 "round": round_idx,
+                **round_meta,
+                # Per-agent answers as they stood when this routing decision was
+                # taken; the objective's disagreement and targeted-cross terms
+                # are computed against exactly these.
+                "answers": {
+                    str(i): previous[i]["answer"] for i in range(1, n_agents + 1)
+                },
+                # Both confidence views for every agent. `reported_confidence`
+                # is what this routing decision actually scored;
+                # `clean_confidence` is what the models reported. They are
+                # equal for every agent under no attack, and differ only for
+                # attacked agents.
+                "clean_confidence": clean_confidence_log,
+                "reported_confidence": reported_confidence_log,
+                "confidence_inflation_agent_ids": list(
+                    confidence_inflation_cfg["agent_ids"]
+                )
+                if confidence_inflation_cfg
+                else [],
+                "confidence_inflation_mode": (
+                    confidence_inflation_cfg["mode"] if confidence_inflation_cfg else None
+                ),
+                "confidence_inflation_value": (
+                    confidence_inflation_cfg["value"] if confidence_inflation_cfg else None
+                ),
                 "perm": perm,
                 "topology": topo,
                 "topology_hash": topology_hash(topo),
@@ -1277,6 +1600,7 @@ def run_one(
                         "content": gen.text,
                     }
                 )
+                parse_failures += int(_json_object_missing(gen.text))
                 parsed_critiques = _parse_critiques(gen.text, source_targets[source])
                 if critique_noise_cfg:
                     parsed_critiques, noise_events, noise_stats = _apply_critique_noise(
@@ -1310,6 +1634,7 @@ def run_one(
                     edge_event = {
                         "event": "critique_edge",
                         "round": round_idx,
+                        **round_meta,
                         "source": actual_source,
                         "original_source": source,
                         "target": target,
@@ -1350,6 +1675,7 @@ def run_one(
             budget=budget,
         )
         for agent_id, gen in zip(update_agents, update_gens):
+            parse_failures += int(_json_object_missing(gen.text))
             parsed = _parse_answer_payload(gen.text, task.parse_answer)
             if adversary_id is not None and agent_id == adversary_id and adversary_sticky:
                 adversary_answer, malicious_event = _apply_malicious_payload(
@@ -1372,6 +1698,7 @@ def run_one(
             event = {
                 "event": "answer_update",
                 "round": round_idx,
+                **round_meta,
                 "agent_id": agent_id,
                 "previous_answer": previous[agent_id]["answer"],
                 "answer": parsed["answer"],
@@ -1406,6 +1733,18 @@ def run_one(
             )
             trace_events.extend(perturb_events)
             _add_robustness_stats(robustness_stats, perturb_stats)
+
+        # Applied after round `round_idx`'s updates are parsed; the attacked
+        # reports are what round `round_idx + 1` routes on.
+        trace_events.extend(
+            _apply_confidence_inflation(
+                current,
+                phase="update",
+                round_idx=round_idx,
+                cfg=confidence_inflation_cfg,
+                is_correct=is_correct,
+            )
+        )
 
         outgoing_current = out_neighbors(topo, n_agents)
         new_influence: Dict[int, float] = {}
@@ -1486,10 +1825,13 @@ def run_one(
         }
     )
 
+    diagnostics["parse_failures"] = float(parse_failures)
+
     return {
         "example_id": example.id,
         "decision": decision,
         "correct": bool(correct),
+        "parse_failures": int(parse_failures),
         "n_messages": len(messages),
         "budget": budget.to_dict(),
         "trace_events": trace_events,
@@ -1697,7 +2039,7 @@ def _append_jsonl(path, row: Mapping[str, Any]) -> None:
     """Append a JSON line to ``path``; creates parents on first call."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, ensure_ascii=False, default=str))
+        fh.write(dumps_safe(row, default=str))
         fh.write("\n")
 
 
@@ -1843,7 +2185,7 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
         ],
     }
     with open(paths.summary_file, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, ensure_ascii=False, default=str)
+        fh.write(dumps_safe(payload, indent=2, default=str))
 
     tracer.close()
     _log.info("Experiment complete; summary -> %s", paths.summary_file)

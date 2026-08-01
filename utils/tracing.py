@@ -10,6 +10,7 @@ POSIX -- best effort; a production setup might prefer SQLite).
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from datetime import datetime
@@ -31,6 +32,42 @@ def _json_default(obj: Any) -> Any:
     if hasattr(obj, "__dict__"):
         return obj.__dict__
     return str(obj)
+
+
+def json_safe(value: Any) -> Any:
+    """Recursively replace NaN / Infinity with ``None``.
+
+    ``json.dumps`` emits bare ``NaN`` and ``Infinity`` tokens. Python reads
+    them back, but they are **not valid JSON** -- strict parsers (JavaScript's
+    ``JSON.parse``, ``jq``, most dataframe loaders) reject the file outright.
+    The diagnostics produce NaN by design (``safe_div`` on a zero denominator),
+    so anything carrying them is unreadable outside Python without this.
+
+    Note ``json.dumps``'s ``default=`` hook cannot do this job: floats are
+    serialized natively and never routed through it.
+    """
+    if isinstance(value, float):
+        return None if (math.isnan(value) or math.isinf(value)) else value
+    if isinstance(value, Mapping):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [json_safe(v) for v in value]
+    return value
+
+
+def dumps_safe(obj: Any, **kwargs: Any) -> str:
+    """``json.dumps`` that cannot emit invalid JSON.
+
+    Sanitizes non-finite floats to ``None`` first, then serializes with
+    ``allow_nan=False`` so any that somehow survive raise instead of being
+    written as an invalid token. This is the single serialization entry point
+    for every file the harness writes -- trace, results, routing and summary --
+    so the three writers cannot drift apart.
+    """
+    kwargs.setdefault("ensure_ascii", False)
+    kwargs.setdefault("default", _json_default)
+    kwargs["allow_nan"] = False
+    return json.dumps(json_safe(obj), **kwargs)
 
 
 class JsonlTracer:
@@ -85,7 +122,7 @@ class JsonlTracer:
                 k: v for k, v in payload.items()
                 if not k.startswith("_") and k not in RUNTIME_ONLY_KEYS
             }
-            self._fp.write(json.dumps(payload, default=_json_default, ensure_ascii=False))
+            self._fp.write(dumps_safe(payload))
             self._fp.write("\n")
 
     def write_many(self, events: list[Mapping[str, Any]]) -> None:

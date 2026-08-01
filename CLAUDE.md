@@ -42,6 +42,28 @@ silently mis-reading an older run.
 state-aware modes (`identity`, `uniform`, `subgroup`, `random_k_regular`) carry
 no `objective` or `selected_terms`, so read defensively.
 
+## Reported vs clean confidence
+
+Every routing row carries two complete per-agent confidence maps.
+`reported_confidence` is what the router actually scored; `clean_confidence` is
+what the model itself reported. They are equal for every agent unless a
+confidence-reporting attack is active, and differ only for attacked agents.
+Both are validated for completeness before the event is written -- a partial
+map raises rather than producing an unanalysable row.
+
+Rows also carry `confidence_inflation_agent_ids` / `_mode` / `_value`, so no
+analysis has to infer which confidence a decision consumed. **Never read
+`answer` / `answer_update` events for reported confidence:** those are emitted
+before the robustness components run, so they carry the pre-attack value. The
+attack's own deltas are in `robustness_confidence_inflation` events.
+
+Two confidence-writing components exist and are mutually exclusive by
+construction (enabling both raises): the pre-existing `confidence_perturbation`
+(global, several strategies gold-conditioned) and `confidence_inflation`
+(scoped to explicit `agent_ids`, leaves answers/reasoning/critiques untouched).
+The latter's `fixed_report` mode *replaces* the report with the configured
+value -- despite the name it is not monotone, 5 -> 4 is a legal outcome.
+
 ## Known gap: mock acceptance policy (blocks stage 5)
 
 `MockLLM` always answers `REJECT` in the update phase, so:

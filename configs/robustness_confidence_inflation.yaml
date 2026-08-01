@@ -1,0 +1,71 @@
+# Scoped confidence-reporting attack, on the offline mock backend.
+#
+# One agent's *reported* confidence is overwritten; its answer, reasoning and
+# critiques are left exactly as the model produced them. Any change in routing
+# is therefore attributable to the report alone.
+#
+# Runnable with no GPU and no network:
+#
+#   python main.py --config configs/robustness_confidence_inflation.yaml
+#
+# Every artefact is tagged mock: true. This config exists to exercise the
+# mechanism end to end, not to produce a result.
+
+extends: default.yaml
+
+agents:
+  # Agents 1-4 answer "42" at confidence 3; agent 5 dissents with "7" at
+  # confidence 2. See configs/models.yaml.
+  model: mock-agent
+
+dataset:
+  name: dummy
+  num_examples: 3
+
+debate:
+  robustness:
+    enabled: true            # master switch; nothing below runs without it
+    type: confidence_inflation
+
+    # Keys live inside the nested block on purpose. _robustness_component
+    # merges the whole robustness block into each component, so anything
+    # written at the robustness level leaks into siblings; this component is
+    # read from the nested block only, and a stray top-level `mode` or `value`
+    # will not configure it.
+    confidence_inflation:
+      enabled: true
+
+      # Explicit list of attacked agents. Required, non-empty, every id in
+      # 1..n_agents. Out-of-range ids raise rather than being clamped.
+      agent_ids: [5]
+
+      # fixed_report   - gold-blind: the report becomes `value` unconditionally.
+      #                  A replacement, not an increase: 2 -> 4 here, but the
+      #                  same setting would take 5 -> 4.
+      # targeted_wrong - oracle-targeted stress test: the report becomes
+      #                  `value` only while the agent's answer is wrong. Uses
+      #                  the dataset gold answer, so it is not a realistic
+      #                  gold-blind strategic agent.
+      mode: fixed_report
+
+      # Integer in the 1-5 rubric. Out-of-range values raise rather than being
+      # clamped. At 4, agent 5 crosses both targeted-cross gates at once under
+      # the inherited thresholds (source_confidence_min 4,
+      # target_confidence_max 3): it becomes eligible as a critique source and
+      # stops being eligible as a target.
+      value: 4
+
+      # Not combinable with robustness.confidence_perturbation -- both write
+      # the reported confidence, so enabling both raises rather than letting
+      # execution order decide the winner.
+
+conditions:
+  - name: pear_full
+    debate:
+      mode: pear_full
+      base_topology: k_regular
+      k_regular_degree: 3
+
+replication:
+  seeds: [0]
+  agent_perm_seeds: [10]
