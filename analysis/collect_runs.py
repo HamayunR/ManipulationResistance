@@ -170,6 +170,26 @@ ROUTING_COLUMNS: Sequence[str] = (
 )
 
 
+def load_tables(analysis_dir: str | Path) -> Dict[str, pd.DataFrame]:
+    """Read the three normalised tables written by :func:`collect`.
+
+    The single entry point for every figure script, so no figure ever opens a
+    raw JSONL file and no two figures disagree about a column's dtype.
+    """
+    analysis_dir = Path(analysis_dir)
+    tables_dir = analysis_dir / "tables"
+    frames: Dict[str, pd.DataFrame] = {}
+    for key, name in (("runs", RUNS_TABLE), ("results", RESULTS_TABLE), ("routing", ROUTING_TABLE)):
+        path = tables_dir / name
+        if not path.is_file():
+            raise RunLoadError(
+                f"missing normalised table {path}. Run analysis/collect_runs.py "
+                f"first: python analysis/collect_runs.py <run dirs> --output {analysis_dir}"
+            )
+        frames[key] = pd.read_csv(path)
+    return frames
+
+
 @dataclass
 class CollectionResult:
     """What the collector produced, for the master command and the tests."""
