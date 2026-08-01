@@ -13,3 +13,7 @@ accelerate>=0.33.0
 
 vllm
 transformers>=4.57.0,<5
+
+# Analysis layer (analysis/*.py). Not needed to run experiments.
+pandas>=2.0
+matplotlib>=3.7

@@ -6,6 +6,10 @@ __pycache__/
 # outputs/, so this must stay ignored or the repo grows on every run.
 outputs/
 
+# Derived analysis tables and figures. Regenerated from outputs/ by
+# analysis/collect_runs.py, so they are reproducible rather than source.
+analysis_artifacts/
+
 # Secrets. README references .env for ANTHROPIC_API_KEY / OPENAI_API_KEY.
 .env
 
