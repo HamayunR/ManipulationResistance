@@ -110,6 +110,7 @@ RESULTS_COLUMNS: Sequence[str] = (
     "attack_type",
     "attack_mode",
     "attack_value",
+    "attacker_ids",
     "attacker_count",
     "adversarial_fraction",
     "example_id",
@@ -282,6 +283,9 @@ def build_results_table(runs: Sequence[NormalizedRun]) -> pd.DataFrame:
             row["schema_version"] = run.schema_version
             for history in ("answer_history", "confidence_history", "influence_history"):
                 row[history] = json_dumps_stable(record.get(history))
+            # Kept beside attacker_count so a paired analysis knows *which*
+            # agent deviated, not just how many did.
+            row["attacker_ids"] = json_dumps_stable(record.get("attacker_ids") or [])
             rows.append(row)
     frame = pd.DataFrame(rows, columns=list(RESULTS_COLUMNS))
     # Nullable integer dtype: a run without token usage keeps <NA>, never 0.

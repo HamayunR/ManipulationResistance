@@ -75,6 +75,7 @@ def make_pear_run(
     include_routing: bool = True,
     include_tokens: bool = True,
     attacker_ids: Sequence[int] = (),
+    dissenting_ids: Optional[Sequence[int]] = None,
     attack_mode: str = "fixed_report",
     attack_value: Optional[int] = None,
     attack_enabled: bool = True,
@@ -106,6 +107,11 @@ def make_pear_run(
 
     attackers = sorted(int(a) for a in attacker_ids)
     attack_active = bool(attackers) and attack_enabled and attack_value is not None
+    # Who dissents from the majority, which is a property of the *agent*, not of
+    # the attack: the truthful arm of a paired sweep is the same dissenting
+    # agent reporting honestly. Defaults to the attacked set so a single
+    # attacked run needs no extra argument.
+    dissenters = sorted(int(a) for a in (dissenting_ids if dissenting_ids is not None else attackers))
     degree = min(2, max(1, n_agents - 1))
 
     debate: Dict[str, Any] = {
@@ -167,15 +173,15 @@ def make_pear_run(
     def reported_of(agent: int) -> float:
         if attack_active and agent in attackers:
             return float(attack_value)
-        return float(attacker_clean_confidence if agent in attackers else clean_confidence)
+        return float(attacker_clean_confidence if agent in dissenters else clean_confidence)
 
     def clean_of(agent: int) -> float:
-        return float(attacker_clean_confidence if agent in attackers else clean_confidence)
+        return float(attacker_clean_confidence if agent in dissenters else clean_confidence)
 
     def g_of(agent: int, example: str) -> float:
         # Oracle corroboration: 5 when the agent's answer is right, else 1.
-        # The attacker dissents with a wrong answer, so it is never corroborated.
-        if agent in attackers:
+        # The dissenter's answer is wrong, so it is never corroborated.
+        if agent in dissenters:
             return 1.0
         return 5.0 if example in correct_examples else 1.0
 
@@ -186,7 +192,7 @@ def make_pear_run(
         for seed in seeds:
             for perm_seed in perm_seeds:
                 answers = {
-                    str(a): (attacker_answer if a in attackers else group_answer)
+                    str(a): (attacker_answer if a in dissenters else group_answer)
                     for a in range(1, effective_agents + 1)
                 }
                 influence = {str(a): 1.0 / effective_agents for a in range(1, effective_agents + 1)}
@@ -205,7 +211,7 @@ def make_pear_run(
                         routing_conf = verified if verification_mode != "none" else reported
                         # Routing exposure rises with the confidence the router
                         # actually scored: that is the effect Figure 3 measures.
-                        base = 1 + int(round(routing_conf)) if agent in attackers else 2
+                        base = 1 + int(round(routing_conf)) if agent in dissenters else 2
                         out_degree.append(max(0, base + rng.randint(0, 1)))
                     in_degree = [degree] * effective_agents
                     total_out = sum(out_degree) or 1
