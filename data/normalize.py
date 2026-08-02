@@ -266,14 +266,28 @@ def parse_math_answer(text: str) -> str:
     if boxed:
         return boxed.strip()
 
-    tail = [line.strip() for line in raw.splitlines() if line.strip()]
-    if not tail:
-        return ""
-    candidate = tail[-1]
-    candidate = re.sub(
-        r"^(the\s+)?(final\s+)?answer\s*(is|:|=)\s*", "", candidate, flags=re.IGNORECASE
-    ).strip()
-    return candidate.rstrip(".").strip()
+    # An answer statement anywhere in the text, not only at the start of a
+    # line: models routinely write "Therefore, the answer is $x$." as one
+    # sentence, and anchoring at the line start silently returns the whole
+    # sentence as the answer.
+    statements = re.findall(
+        r"(?:final\s+)?answer\s*(?:is|:|=)\s*(.+?)\s*$",
+        raw,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    candidate = statements[-1] if statements else ""
+
+    if not candidate:
+        tail = [line.strip() for line in raw.splitlines() if line.strip()]
+        if not tail:
+            return ""
+        candidate = tail[-1]
+
+    candidate = candidate.strip().rstrip(".").strip()
+    # A stated answer is usually inline maths; the delimiters are not part of it.
+    if candidate.startswith("$") and candidate.endswith("$") and len(candidate) > 1:
+        candidate = candidate[1:-1].strip()
+    return candidate
 
 
 def math_equal(prediction: str, gold: str) -> bool:

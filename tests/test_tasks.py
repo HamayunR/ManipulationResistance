@@ -219,6 +219,28 @@ def test_math_answer_parsing_prefers_the_box() -> None:
     assert parse_math_answer("") == ""
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # An answer statement mid-sentence, which is how models actually write.
+        ("... therefore the answer is \\text{Evelyn}", "\\text{Evelyn}"),
+        ("Hence, the final answer is $5\\sqrt{2}$.", "5\\sqrt{2}"),
+        ("So the answer is 42.", "42"),
+        ("After simplifying we get\n\\frac{1}{2}", "\\frac{1}{2}"),
+    ],
+)
+def test_math_answer_parsing_finds_a_mid_sentence_statement(text: str, expected: str) -> None:
+    assert parse_math_answer(text) == expected
+
+
+def test_math_scoring_accepts_a_stated_gold(tmp_path: Path) -> None:
+    """Regression: a gold answer restated in a sentence must still score."""
+    example = Example(id="m1", question="?", answer="\\text{Evelyn}")
+    task = _math_task(tmp_path, [example])
+
+    assert task.score("... therefore the answer is \\text{Evelyn}", example) is True
+
+
 def test_math_500_scoring(tmp_path: Path) -> None:
     example = Example(id="m1", question="?", answer="5\\sqrt{2}")
     task = _math_task(tmp_path, [example])
@@ -279,6 +301,18 @@ def test_missing_corpus_names_the_fetch_command(tmp_path: Path) -> None:
     assert "python scripts/fetch_datasets.py gsm8k --split test" in message
     assert "hint here" in message
     assert SAMPLE_SPLIT in message
+
+
+def test_manifest_is_not_listed_as_a_split(tmp_path: Path) -> None:
+    """manifest.json sits beside the splits and shares their suffix."""
+    write_records(tmp_path / "gsm8k" / "test.jsonl", [CorpusRecord("a", "q", "1")])
+    write_manifest(tmp_path / "gsm8k", {"dataset": "gsm8k", "splits": {}})
+
+    splits = available_splits(tmp_path, "gsm8k")
+
+    assert "manifest" not in splits
+    # "test" is on disk; "sample" is always offered from the packaged fixtures.
+    assert splits == ["sample", "test"]
 
 
 def test_manifest_merges_splits(tmp_path: Path) -> None:

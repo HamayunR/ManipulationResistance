@@ -195,7 +195,8 @@ def available_splits(data_dir: str | os.PathLike, name: str) -> List[str]:
     base = Path(data_dir) / name
     if base.is_dir():
         for entry in base.iterdir():
-            if entry.suffix in CORPUS_SUFFIXES:
+            # manifest.json sits beside the splits and shares their suffix.
+            if entry.name != MANIFEST_NAME and entry.suffix in CORPUS_SUFFIXES:
                 found.add(entry.stem)
     if (FIXTURES_DIR / name).is_dir():
         found.add(SAMPLE_SPLIT)
