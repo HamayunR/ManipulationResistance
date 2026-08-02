@@ -75,33 +75,53 @@ def repo_revision(dataset: str, token: Optional[str] = None) -> Optional[str]:
         return None
 
 
+def _access_error(dataset: str, exc: urllib.error.HTTPError, what: str) -> SystemExit:
+    """Turn an auth failure into an instruction rather than a stack trace."""
+    if exc.code in (401, 403):
+        has_token = bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+        return SystemExit(
+            f"{dataset} is gated (HTTP {exc.code} on {what}).\n"
+            + (
+                "A token is set, but it does not grant access. Open the dataset "
+                "page while signed in as that token's account and accept the "
+                "conditions."
+                if has_token
+                else "No HF token found. Open the dataset's Hugging Face page, sign "
+                "in, accept the access conditions, then:\n"
+                "    export HF_TOKEN=hf_xxx    # a token with read access\n"
+                "and re-run this command."
+            )
+        )
+    return SystemExit(f"could not fetch {dataset} ({what}): {exc}")
+
+
 def load_split(
     dataset: str, config: str, split: str, token: Optional[str] = None
 ) -> pd.DataFrame:
-    """Download one split via the parquet conversion and return it as a frame."""
+    """Download one split via the parquet conversion and return it as a frame.
+
+    Both steps are guarded. A gated dataset lists its parquet files to anyone
+    but refuses the download itself, so checking only the listing turns an
+    access problem into a stack trace at the worst moment.
+    """
+    import io
+
     listing_url = f"{HF_API}/{dataset}/parquet/{config}/{split}"
     try:
         urls = _get_json(listing_url, token)
     except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            raise SystemExit(
-                f"{dataset} is gated or private (HTTP {exc.code}).\n"
-                "Accept the dataset's conditions on its Hugging Face page, then\n"
-                "export a token with read access:\n"
-                "    export HF_TOKEN=hf_xxx\n"
-                "and re-run this command."
-            ) from exc
-        raise SystemExit(f"could not list parquet files for {dataset}: {exc}") from exc
+        raise _access_error(dataset, exc, "listing the parquet files") from exc
     if not isinstance(urls, list) or not urls:
         raise SystemExit(f"no parquet files listed for {dataset} [{config}/{split}]")
 
     frames = []
     for url in urls:
         print(f"    downloading {url}")
-        with urllib.request.urlopen(_request(url, token), timeout=300) as response:
-            payload = response.read()
-        import io
-
+        try:
+            with urllib.request.urlopen(_request(url, token), timeout=300) as response:
+                payload = response.read()
+        except urllib.error.HTTPError as exc:
+            raise _access_error(dataset, exc, "downloading the data") from exc
         frames.append(pd.read_parquet(io.BytesIO(payload)))
     return pd.concat(frames, ignore_index=True)
 

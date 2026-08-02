@@ -13,6 +13,7 @@ synthetic ``sample`` splits.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -382,6 +383,54 @@ def test_parse_answer_is_usable_as_a_bare_callable(tmp_path: Path) -> None:
         parser = task.parse_answer
         assert parser("") == ""
         assert isinstance(parser("some model output"), str)
+
+
+# ------------------------------------------------------------ gated access --
+def test_gated_dataset_gives_an_instruction_not_a_stack_trace(monkeypatch) -> None:
+    """A gated dataset lists its parquet files to anyone but refuses the download.
+
+    Guarding only the listing call turns an access problem into a traceback at
+    the point where the fetch would otherwise have started.
+    """
+    import urllib.error
+    import urllib.request
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import fetch_datasets
+
+    monkeypatch.setattr(
+        fetch_datasets, "_get_json", lambda url, token=None: ["https://example/0.parquet"]
+    )
+
+    def _refuse(*args, **kwargs):
+        raise urllib.error.HTTPError("https://example/0.parquet", 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", _refuse)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        fetch_datasets.load_split("Idavidrein/gpqa", "gpqa_diamond", "train")
+
+    message = str(excinfo.value)
+    assert "gated" in message
+    assert "HF_TOKEN" in message
+    assert "downloading the data" in message
+
+
+def test_gated_message_differs_when_a_token_is_present(monkeypatch) -> None:
+    import urllib.error
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import fetch_datasets
+
+    monkeypatch.setenv("HF_TOKEN", "hf_fake")
+    error = urllib.error.HTTPError("https://example", 403, "Forbidden", {}, None)
+
+    message = str(fetch_datasets._access_error("Idavidrein/gpqa", error, "downloading the data"))
+
+    assert "does not grant access" in message
+    assert "accept the conditions" in message
 
 
 # ---------------------------------------------------------------- helpers --
