@@ -137,8 +137,21 @@ def setup_run_logging(
     safe_tag = ""
     if tag:
         safe_tag = "_" + _safe_slug(tag)
+    # ``exist_ok=False`` on purpose: a run must never write into a directory
+    # that already holds another run's results. The timestamp has one-second
+    # resolution, though, and a benchmark sweep launches runs back to back, so
+    # a collision is disambiguated with a suffix rather than crashing the run.
     run_dir = output_root / f"{run_timestamp}{safe_tag}"
-    run_dir.mkdir(parents=True, exist_ok=False)
+    attempt = 1
+    while True:
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            attempt += 1
+            if attempt > 1000:  # pragma: no cover - pathological
+                raise
+            run_dir = output_root / f"{run_timestamp}-{attempt}{safe_tag}"
 
     paths = RunPaths(
         run_dir=run_dir,

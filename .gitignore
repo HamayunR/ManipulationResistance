@@ -10,6 +10,13 @@ outputs/
 # analysis/collect_runs.py, so they are reproducible rather than source.
 analysis_artifacts/
 
+# Fetched benchmark corpora. Reproducible from
+# `python scripts/fetch_datasets.py`, large, and in GPQA's case not
+# redistributable. The packaged synthetic samples under data/fixtures/ are
+# source and stay tracked.
+data/*/
+!data/fixtures/
+
 # Secrets. README references .env for ANTHROPIC_API_KEY / OPENAI_API_KEY.
 .env
 

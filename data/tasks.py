@@ -31,6 +31,23 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Type
 
+from data.local import CorpusRecord, load_corpus
+from data.normalize import (
+    format_options,
+    math_equal,
+    numbers_equal,
+    parse_choice_letter,
+    parse_math_answer,
+    parse_number,
+)
+from prompts import (
+    GPQA_TEMPLATE,
+    GSM8K_TEMPLATE,
+    MATH_500_TEMPLATE,
+    MMLU_PRO_TEMPLATE,
+    TRUTHFUL_QA_TEMPLATE,
+)
+
 
 @dataclass
 class Example:
@@ -177,9 +194,154 @@ class DummyTask(Task):
 
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
+
+# --------------------------------------------------------------- real benchmarks --
+class LocalCorpusTask(Task):
+    """Base class for benchmarks read from a frozen local corpus.
+
+    Subclasses declare their name, default split, prompt template and answer
+    type; the loading, the "you have not fetched this yet" refusal and the
+    provenance handling are shared.
+
+    The corpus is authoritative. Nothing here re-derives an option order, a
+    gold label or an id at run time -- those were fixed once at fetch time and
+    recorded with a checksum, so two runs a month apart score the same items in
+    the same order (see :mod:`data.local`).
+    """
+
+    #: Prompt wrapper from :mod:`prompts`; ``{question}`` and, for
+    #: multiple-choice tasks, ``{options}`` are substituted.
+    template: str = "{question}"
+    #: Human-readable hint appended to the "not fetched" error.
+    fetch_hint: str = ""
+
+    def load_examples(self) -> Sequence[Example]:
+        records = load_corpus(
+            name=self.name,
+            split=self.split,
+            data_dir=self.data_dir,
+            fetch_hint=self.fetch_hint,
+        )
+        return [self._to_example(record) for record in records]
+
+    def _to_example(self, record: CorpusRecord) -> Example:
+        return Example(
+            id=record.id,
+            question=record.question,
+            answer=record.answer,
+            choices=list(record.choices) if record.choices else None,
+        )
+
+    def format_question(self, example: Example) -> str:
+        if example.choices:
+            return self.template.format(
+                question=example.question, options=format_options(example.choices)
+            )
+        return self.template.format(question=example.question)
+
+
+class MultipleChoiceTask(LocalCorpusTask):
+    """Letter-answer benchmarks: the gold answer is an option letter.
+
+    ``score`` compares letters, never option *text*: the runner's adversary and
+    random-baseline paths both emit letters, and accepting text here would make
+    them look wrong for the wrong reason.
+    """
+
+    def parse_answer(self, text: str) -> str:
+        return parse_choice_letter(text, n_options=len(_LETTERS))
+
+    def score(self, prediction: str, example: Example) -> bool:
+        n_options = len(example.choices or []) or len(_LETTERS)
+        predicted = parse_choice_letter(prediction, n_options=n_options)
+        if not predicted:
+            return False
+        return predicted == str(example.answer).strip().upper()
+
+
+class GSM8KTask(LocalCorpusTask):
+    """GSM8K grade-school word problems. Free-form numeric answers."""
+
+    name = "gsm8k"
+    default_split = "test"
+    template = GSM8K_TEMPLATE
+    fetch_hint = "Source: openai/gsm8k (config 'main'). Splits: train, test."
+
+    def parse_answer(self, text: str) -> str:
+        return parse_number(text)
+
+    def score(self, prediction: str, example: Example) -> bool:
+        return numbers_equal(parse_number(prediction) or prediction, example.answer)
+
+
+class MATH500Task(LocalCorpusTask):
+    """MATH-500 competition problems. Free-form LaTeX answers."""
+
+    name = "math_500"
+    default_split = "test"
+    template = MATH_500_TEMPLATE
+    fetch_hint = "Source: HuggingFaceH4/MATH-500. Split: test (500 items)."
+
+    def parse_answer(self, text: str) -> str:
+        return parse_math_answer(text)
+
+    def score(self, prediction: str, example: Example) -> bool:
+        return math_equal(parse_math_answer(prediction) or prediction, example.answer)
+
+
+class MMLUProTask(MultipleChoiceTask):
+    """MMLU-Pro. Up to ten options per question (A-J)."""
+
+    name = "mmlu_pro"
+    default_split = "test"
+    template = MMLU_PRO_TEMPLATE
+    fetch_hint = "Source: TIGER-Lab/MMLU-Pro. Splits: test, validation."
+
+
+class GPQATask(MultipleChoiceTask):
+    """GPQA expert-level science. Four options, order frozen at fetch time.
+
+    The upstream release stores the correct answer in its own column rather
+    than among the distractors, so the option order is created during the
+    fetch, from a recorded seed. Re-deriving it per run would let a refactor
+    quietly change which letter is correct.
+    """
+
+    name = "gpqa"
+    default_split = "diamond"
+    template = GPQA_TEMPLATE
+    fetch_hint = (
+        "Source: Idavidrein/gpqa (gated). Accept the conditions on the dataset "
+        "page and export HF_TOKEN before fetching. Subsets: diamond, main, "
+        "extended. The authors ask that GPQA items are not published in "
+        "plain text, so no sample of it is committed to this repository."
+    )
+
+
+class TruthfulQATask(MultipleChoiceTask):
+    """TruthfulQA MC1: one truthful option among several plausible falsehoods.
+
+    Option order is frozen at fetch time for the same reason as GPQA -- the
+    raw MC1 targets always list the correct answer first.
+    """
+
+    name = "truthful_qa"
+    default_split = "validation"
+    template = TRUTHFUL_QA_TEMPLATE
+    fetch_hint = (
+        "Source: truthfulqa/truthful_qa (config 'multiple_choice'). "
+        "Split: validation (817 items)."
+    )
+
+
 #: Registry of available datasets, keyed by ``dataset.name`` in the config.
 TASK_REGISTRY: Dict[str, Type[Task]] = {
     DummyTask.name: DummyTask,
+    GSM8KTask.name: GSM8KTask,
+    MATH500Task.name: MATH500Task,
+    MMLUProTask.name: MMLUProTask,
+    GPQATask.name: GPQATask,
+    TruthfulQATask.name: TruthfulQATask,
 }
 
 
@@ -226,6 +388,13 @@ __all__ = [
     "Example",
     "Task",
     "DummyTask",
+    "LocalCorpusTask",
+    "MultipleChoiceTask",
+    "GSM8KTask",
+    "MATH500Task",
+    "MMLUProTask",
+    "GPQATask",
+    "TruthfulQATask",
     "TASK_REGISTRY",
     "load_task",
     "available_tasks",

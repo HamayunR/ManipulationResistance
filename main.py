@@ -109,7 +109,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dataset",
         type=str,
         default=None,
-        help="Override dataset.name (mmlu_pro | truthful_qa | gsm8k | math_500).",
+        help=(
+            "Override dataset.name. Registered: "
+            "gsm8k | math_500 | mmlu_pro | gpqa | truthful_qa | dummy."
+        ),
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default=None,
+        help=(
+            "Override dataset.split. Omit to use the benchmark's own default. "
+            "Use 'sample' for the packaged synthetic items (smoke tests only)."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -190,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg.raw.setdefault("debate", {})["mode"] = args.mode
     if args.dataset is not None:
         cfg.raw.setdefault("dataset", {})["name"] = args.dataset
+    if args.split is not None:
+        cfg.raw.setdefault("dataset", {})["split"] = args.split
     if args.output_dir is not None:
         cfg.raw.setdefault("paths", {})["output_dir"] = args.output_dir
     if args.seeds is not None:

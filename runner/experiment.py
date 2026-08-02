@@ -2417,6 +2417,12 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
         "run_dir": str(paths.run_dir),
         "mock": bool(getattr(llm, "is_mock", False)),
         "model": model_name,
+        # The *resolved* dataset coordinates. ``dataset.split`` is usually left
+        # unset in the config so each Task can apply its own default, which
+        # would otherwise leave nothing on record about which split was scored.
+        "dataset": task.name,
+        "dataset_split": task.split,
+        "dataset_n_examples": len(task),
         "judge_model": judge_name,
         "parallel_examples": parallel_examples,
         "conditions": [

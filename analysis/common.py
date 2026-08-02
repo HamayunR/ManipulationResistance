@@ -469,7 +469,12 @@ def _opt_int(value: Any) -> Optional[int]:
 
 
 def resolve_condition_metadata(
-    config: Mapping[str, Any], condition_name: str, *, method: str = "pear"
+    config: Mapping[str, Any],
+    condition_name: str,
+    *,
+    method: str = "pear",
+    dataset_fallback: Optional[str] = None,
+    split_fallback: Optional[str] = None,
 ) -> ConditionMeta:
     """Effective metadata for one condition of one run.
 
@@ -513,11 +518,12 @@ def resolve_condition_metadata(
 
     return ConditionMeta(
         condition=str(condition_name),
-        dataset=dataset_cfg.get("name"),
-        # Left unset by most configs: each Task applies its own default split,
-        # which the run does not log. Guessing it here would attach a split
-        # label the run never recorded, so it stays null.
-        dataset_split=dataset_cfg.get("split"),
+        dataset=dataset_cfg.get("name") or dataset_fallback,
+        # Usually left unset in the config so each Task can apply its own
+        # default. ``split_fallback`` carries the split the run actually
+        # resolved (summary.json); with neither present it stays null rather
+        # than being guessed.
+        dataset_split=dataset_cfg.get("split") or split_fallback,
         model=agents_cfg.get("model"),
         method=method,
         mechanism=str(debate.get("mode")) if debate.get("mode") else None,
@@ -721,7 +727,14 @@ def load_pear_run(run_dir: str | os.PathLike) -> NormalizedRun:
 
     names = condition_names(config)
     conditions = {
-        name: resolve_condition_metadata(config, name, method="pear") for name in names
+        name: resolve_condition_metadata(
+            config,
+            name,
+            method="pear",
+            dataset_fallback=summary.get("dataset"),
+            split_fallback=summary.get("dataset_split"),
+        )
+        for name in names
     }
     # Fall back to the row's own condition tag for a condition the config does
     # not declare: the row is evidence the condition ran, and dropping it would
@@ -797,8 +810,8 @@ def load_pear_run(run_dir: str | os.PathLike) -> NormalizedRun:
         schema_version=schema_version,
         mock=None if mock is None else bool(mock),
         model=summary.get("model") or (config.get("agents") or {}).get("model"),
-        dataset=(config.get("dataset") or {}).get("name"),
-        dataset_split=(config.get("dataset") or {}).get("split"),
+        dataset=(config.get("dataset") or {}).get("name") or summary.get("dataset"),
+        dataset_split=(config.get("dataset") or {}).get("split") or summary.get("dataset_split"),
         config=config,
         summary=summary,
         conditions=conditions,

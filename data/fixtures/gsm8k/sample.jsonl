@@ -1,0 +1,3 @@
+{"answer": "8", "choices": null, "id": "gsm8k-sample-00001", "question": "A baker makes 24 rolls each morning. He sells 9 before noon and 7 in the afternoon. How many rolls are left at the end of the day?"}
+{"answer": "31", "choices": null, "id": "gsm8k-sample-00002", "question": "Tara buys 3 boxes of pens with 12 pens in each box. She gives 5 pens to her brother. How many pens does she have left?"}
+{"answer": "165", "choices": null, "id": "gsm8k-sample-00003", "question": "A train travels 60 miles per hour for 2 hours, then 45 miles per hour for 1 hour. How many miles does it travel in total?"}

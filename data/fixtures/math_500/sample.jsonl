@@ -1,0 +1,3 @@
+{"answer": "1", "choices": null, "id": "math_500-sample-00001", "question": "What is the value of $\\frac{3}{4} + \\frac{1}{4}$?"}
+{"answer": "7", "choices": null, "id": "math_500-sample-00002", "question": "Solve for $x$: $2x + 6 = 20$."}
+{"answer": "5\\sqrt{2}", "choices": null, "id": "math_500-sample-00003", "question": "Simplify $\\sqrt{50}$. Express your answer in simplest radical form."}
