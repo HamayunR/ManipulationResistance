@@ -109,6 +109,35 @@ def test_choice_letter_rejects_a_letter_beyond_the_options() -> None:
     assert parse_choice_letter("The answer is J", n_options=4) == ""
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Observed in a real Claude run: the lead-in matched case-insensitively
+        # and captured the first letter of the following *word*.
+        "... 'Safe practices' too quickly. Yes, that's the standard interpretation.",
+        "the answer is the standard interpretation",
+        "The answer is clearly stated above",
+        "final answer: reconsidering the options",
+    ],
+)
+def test_prose_after_a_lead_in_is_not_an_answer(text: str) -> None:
+    """A word following "answer is" must not be read as its first letter."""
+    assert parse_choice_letter(text, n_options=10) == ""
+
+
+def test_letter_bound_uses_the_benchmark_option_count(tmp_path: Path) -> None:
+    """A letter this benchmark has no option for is not an answer.
+
+    It would otherwise reach answer_history, the routing state and the
+    aggregator, none of which check it again.
+    """
+    example = Example(id="q1", question="?", answer="B", choices=["w", "x", "y", "z"])
+    task = _mmlu_task(tmp_path, [example])
+
+    assert task.parse_answer("The answer is S") == ""
+    assert task.parse_answer("The answer is C") == "C"
+
+
 def test_choice_letter_returns_empty_for_no_answer() -> None:
     assert parse_choice_letter("", n_options=4) == ""
     assert parse_choice_letter("I cannot determine this.", n_options=4) == ""

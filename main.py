@@ -34,6 +34,11 @@ import yaml
 
 from runner.experiment import ExperimentConfig, run_experiment
 
+try:  # optional dependency; the backends fall back to the ambient environment
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - python-dotenv is in requirements.txt
+    load_dotenv = None
+
 
 # Argument parsing
 def _parse_model_override(text: str) -> tuple[str, Any]:
@@ -187,6 +192,13 @@ def main(argv: list[str] | None = None) -> int:
         ``0`` on success, ``1`` if the runner raised an unhandled exception.
     """
     args = _build_parser().parse_args(argv)
+
+    # Read .env before any backend is built. Every provider reads its key from
+    # the environment (ANTHROPIC_API_KEY, OPENAI_API_KEY) and their error
+    # messages point at .env, so without this the documented setup silently
+    # does nothing. Real environment variables always win over the file.
+    if load_dotenv is not None:
+        load_dotenv(override=False)
 
     # Load + resolve YAML (handles ``extends:`` chaining inside).
     cfg = ExperimentConfig.from_file(args.config, run_tag=args.tag)

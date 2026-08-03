@@ -29,12 +29,22 @@ LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 #: Ordered by how explicit the statement is. The first pattern that matches
 #: wins, so "the answer is (B)" is never overruled by a stray "A" earlier in
 #: the reasoning.
+#:
+#: Two details that are easy to get wrong and were both observed corrupting a
+#: real run:
+#:
+#: * the case-insensitive part is scoped to the *lead-in words* only, via
+#:   ``(?i:...)``. Applying it to the letter class as well makes ``[A-Z]``
+#:   match lowercase, so "answer is the standard interpretation" yields "T";
+#: * the captured letter must be followed by a non-letter. Without that,
+#:   "answer is 'Safe practices'" yields "S" -- the first letter of a word,
+#:   not an option.
 _LETTER_PATTERNS = (
-    r"answer\s*(?:is|:|=)\s*\(?\s*([A-Z])\s*\)?",
-    r"final\s+answer\s*(?:is|:|=)?\s*\(?\s*([A-Z])\s*\)?",
-    r"\\boxed\{\s*\(?\s*([A-Z])\s*\)?\s*\}",
-    r"option\s*\(?\s*([A-Z])\s*\)?",
-    r"\*\*\s*\(?\s*([A-Z])\s*\)?\s*\*\*",
+    r"(?i:answer\s*(?:is|:|=)\s*)\(?\s*([A-Z])(?![A-Za-z])\)?",
+    r"(?i:final\s+answer\s*(?:is|:|=)?\s*)\(?\s*([A-Z])(?![A-Za-z])\)?",
+    r"\\boxed\{\s*\(?\s*([A-Z])(?![A-Za-z])\s*\)?\s*\}",
+    r"(?i:option)\s*\(?\s*([A-Z])(?![A-Za-z])\)?",
+    r"\*\*\s*\(?\s*([A-Z])(?![A-Za-z])\s*\)?\s*\*\*",
 )
 
 
@@ -53,7 +63,7 @@ def parse_choice_letter(text: str, n_options: int = 26) -> str:
     valid = set(LETTERS[: max(0, min(int(n_options), len(LETTERS)))])
 
     for pattern in _LETTER_PATTERNS:
-        matches = re.findall(pattern, raw, flags=re.IGNORECASE)
+        matches = re.findall(pattern, raw)
         for candidate in reversed(matches):
             letter = candidate.upper()
             if letter in valid:

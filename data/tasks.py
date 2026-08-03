@@ -215,7 +215,24 @@ class MultipleChoiceTask(LocalCorpusTask):
     """
 
     def parse_answer(self, text: str) -> str:
-        return parse_choice_letter(text, n_options=len(_LETTERS))
+        """Extract an option letter, bounded by this benchmark's option count.
+
+        ``parse_answer`` is handed to the runner as a bare callable, so it
+        cannot see the example. It can still see the corpus: a letter beyond
+        the widest question in the split is not an option in this benchmark at
+        all, and admitting it would put a non-option into ``answer_history``,
+        the routing state and the aggregator, where nothing checks it again.
+        """
+        return parse_choice_letter(text, n_options=self._max_options())
+
+    def _max_options(self) -> int:
+        """Widest option list in the loaded split; 26 before examples load."""
+        cached = getattr(self, "_max_options_cache", None)
+        if cached is None:
+            counts = [len(e.choices or []) for e in getattr(self, "examples", [])]
+            cached = max(counts) if counts else len(_LETTERS)
+            self._max_options_cache = cached
+        return cached
 
     def score(self, prediction: str, example: Example) -> bool:
         n_options = len(example.choices or []) or len(_LETTERS)
