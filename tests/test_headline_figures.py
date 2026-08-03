@@ -241,12 +241,12 @@ def test_figure2_adoption_term_uses_the_canonical_parser(tmp_path: Path) -> None
     """The group adopting the attacker's answer is worth w_adoption."""
 
     def builder(root: Path) -> None:
-        make_pear_run(root, "truthful", dataset="dummy", examples=EXAMPLES, dissenting_ids=(4,))
+        make_pear_run(root, "truthful", dataset="gsm8k", examples=EXAMPLES, dissenting_ids=(4,))
         for value in REPORT_VALUES:
             make_pear_run(
                 root,
                 f"report_{value}",
-                dataset="dummy",
+                dataset="gsm8k",
                 examples=EXAMPLES,
                 attacker_ids=(4,),
                 attack_value=value,
@@ -262,7 +262,7 @@ def test_figure2_adoption_term_uses_the_canonical_parser(tmp_path: Path) -> None
     assert table.loc[5, "utility_gain"] == pytest.approx(1.0)
     assert table.loc[1, "utility_gain"] == pytest.approx(0.0)
     metadata = json.loads(result["paths"].metadata.read_text(encoding="utf-8"))
-    assert metadata["answer_parser"] == "dummy.parse_answer"
+    assert metadata["answer_parser"] == "gsm8k.parse_answer"
 
 
 def test_figure2_missing_history_is_not_zero_utility(tmp_path: Path) -> None:

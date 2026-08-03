@@ -2346,7 +2346,7 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
     random_only = bool(condition_modes) and all(mode == "random" for mode in condition_modes)
 
     # LLM
-    model_name = cfg.get("agents", {}).get("model", "stub")
+    model_name = cfg.get("agents", {}).get("model", "")
     registry_path = cfg.get("paths", {}).get("models_yaml", "configs/models.yaml")
     registry = load_model_registry(registry_path)
     model_overrides = cfg.get("agents", {}).get("model_overrides") or {}

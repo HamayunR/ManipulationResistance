@@ -21,7 +21,7 @@ Usage
 -----
     python analysis/check_logs.py RUN_DIR [RUN_DIR ...]
     python analysis/check_logs.py outputs/exp_*/  --condition pear_full
-    python analysis/check_logs.py RUN_DIR --example dummy-2 --label attacked
+    python analysis/check_logs.py RUN_DIR --example gsm8k-test-00007 --label attacked
 
 Multiple run directories are pooled into one report, so a 20-perm-seed sweep
 spread over several runs reads the same as a single run containing all of them.

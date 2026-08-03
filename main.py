@@ -7,7 +7,7 @@ lifting (timestamped output directory, JSONL trace, summary aggregation).
 
 Usage
 -----
-Run the default settings with the deterministic stub backend
+Run the default settings with a configured model backend
 (no API key required)::
 
     python main.py --config configs/default.yaml
@@ -79,7 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Override agents.model. Must match a key in configs/models.yaml "
-            "(e.g. 'stub', 'gpt-4o-mini', 'claude-3-5-sonnet')."
+            "(e.g. 'qwen2.5-7b-vllm', 'claude-haiku-4-5')."
         ),
     )
     parser.add_argument(
@@ -111,7 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Override dataset.name. Registered: "
-            "gsm8k | math_500 | mmlu_pro | gpqa | truthful_qa | dummy."
+            "gsm8k | math_500 | mmlu_pro | gpqa | truthful_qa."
         ),
     )
     parser.add_argument(

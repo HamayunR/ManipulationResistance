@@ -19,9 +19,9 @@ token usage stays ``None``; it does not become 0. Analysis that needs a
 capability must skip the method and say so, which is what
 ``analysis/check_figure_readiness.py`` reports.
 
-The PEAR-specific diagnostics ``analysis/check_logs.py`` and
-``analysis/check_inflation_scenario.py`` deliberately do not go through here.
-They read routing.jsonl directly and are free to be mechanism-specific.
+The PEAR-specific diagnostic ``analysis/check_logs.py`` deliberately does not
+go through here. It reads routing.jsonl directly and is free to be
+mechanism-specific.
 """
 
 from __future__ import annotations

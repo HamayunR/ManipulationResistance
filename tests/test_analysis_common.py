@@ -182,9 +182,9 @@ def test_condition_metadata_carries_effective_values(tmp_path: Path) -> None:
     )
     meta = resolve_condition_metadata(load_run_config(run), "pear_full")
 
-    assert meta.dataset == "dummy"
+    assert meta.dataset == "gsm8k"
     assert meta.dataset_split == "test"
-    assert meta.model == "mock-agent"
+    assert meta.model == "test-model"
     assert meta.mechanism == "pear_full"
     assert meta.base_topology == "k_regular"
     assert (meta.n_agents, meta.rounds) == (5, 3)
@@ -323,8 +323,8 @@ def test_provenance_columns_are_present_on_every_row(tmp_path: Path) -> None:
         assert row["run_id"].endswith("prov")
         assert row["schema_version"] == 2
         assert row["mock"] is True
-        assert row["dataset"] == "dummy"
-        assert row["model"] == "mock-agent"
+        assert row["dataset"] == "gsm8k"
+        assert row["model"] == "test-model"
         assert row["condition"] == "pear_full"
 
 

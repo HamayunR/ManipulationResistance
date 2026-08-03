@@ -48,8 +48,6 @@ def _print_catalogue(data_dir: str) -> int:
     print(f"Corpus root: {Path(data_dir).resolve()}\n")
     print(f"{'dataset':<14}{'answer':<9}{'splits on disk':<28}{'items':>8}  source revision")
     for name, task_cls in sorted(TASK_REGISTRY.items()):
-        if name == "dummy":
-            continue
         splits = available_splits(data_dir, name)
         manifest = read_manifest(data_dir, name) or {}
         entries = manifest.get("splits") or {}

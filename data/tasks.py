@@ -27,7 +27,6 @@ must not rely on anything beyond its argument, and it must tolerate ``""``.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Type
 
@@ -139,57 +138,6 @@ class Task:
     def score(self, prediction: str, example: Example) -> bool:
         """Return whether ``prediction`` matches ``example``'s gold answer."""
         return str(prediction or "").strip() == str(example.answer).strip()
-
-
-class DummyTask(Task):
-    """Three hardcoded single-digit arithmetic items, for pipeline smoke tests.
-
-    Free-form numeric answers, so ``choices`` stays ``None``. Integer golds also
-    keep ``_default_wrong_answer``'s numeric ``+1`` branch working, which the
-    robustness adversary depends on.
-    """
-
-    name = "dummy"
-    default_split = "test"
-
-    _ITEMS = [
-        ("dummy-1", "What is 3 + 4?", "7"),
-        ("dummy-2", "What is 9 - 5?", "4"),
-        ("dummy-3", "What is 2 * 3?", "6"),
-    ]
-
-    def load_examples(self) -> Sequence[Example]:
-        return [
-            Example(id=item_id, question=question, answer=answer, choices=None)
-            for item_id, question, answer in self._ITEMS
-        ]
-
-    def format_question(self, example: Example) -> str:
-        return (
-            "Task type: single-digit arithmetic.\n"
-            "Answer format: provide only the final integer in the JSON answer "
-            "field. No units, commas, or explanatory text.\n\n"
-            f"Problem:\n{example.question}"
-        )
-
-    def parse_answer(self, text: str) -> str:
-        """Return the last integer in ``text``, or ``""`` if there is none.
-
-        Taking the *last* match is the usual convention for chain-of-thought
-        output, where the final line restates the answer.
-        """
-        matches = re.findall(r"-?\d+", str(text or "").replace(",", ""))
-        return matches[-1] if matches else ""
-
-    def score(self, prediction: str, example: Example) -> bool:
-        gold = str(example.answer).strip()
-        pred = str(prediction or "").strip()
-        if not pred:
-            return False
-        try:
-            return int(pred.replace(",", "")) == int(gold)
-        except ValueError:
-            return pred == gold
 
 
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -354,7 +302,6 @@ class TruthfulQATask(MultipleChoiceTask):
 
 #: Registry of available datasets, keyed by ``dataset.name`` in the config.
 TASK_REGISTRY: Dict[str, Type[Task]] = {
-    DummyTask.name: DummyTask,
     GSM8KTask.name: GSM8KTask,
     MATH500Task.name: MATH500Task,
     MMLUProTask.name: MMLUProTask,
@@ -405,7 +352,6 @@ def available_tasks() -> List[str]:
 __all__ = [
     "Example",
     "Task",
-    "DummyTask",
     "LocalCorpusTask",
     "MultipleChoiceTask",
     "GSM8KTask",

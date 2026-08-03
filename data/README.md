@@ -118,7 +118,8 @@ python main.py --config configs/default.yaml --dataset gsm8k --split sample
 ```
 
 The items are invented and structurally identical to the real thing. They exist
-so the pipeline can be exercised with no network and no downloads. They are
+so the data layer can be exercised with no network and no downloads (a model
+backend is still needed to run a debate over them). They are
 reachable **only** through the explicit `sample` split, so a real evaluation can
 never silently fall back to toy data — and a number produced from them is not a
 result. GPQA has none, because its authors ask that items are not republished.

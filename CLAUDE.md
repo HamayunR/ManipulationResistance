@@ -44,8 +44,10 @@ With `verified_confidence_mode: none` the router scores `reported_confidence`
 and both verification columns are null. Reading the wrong one describes a
 mechanism the run never used.
 
-## Mock runs
+## The `mock` flag
 
-The offline mock provider tags every artefact `mock: true`. Mock outputs prove
-that code paths run; they are never evidence about a model. Analysis marks them
-`diagnostic_only`, and mixing mock with real runs is rejected.
+Runs record `mock: true|false` from whether the backend declares itself canned.
+No canned backend ships with this repository, so runs are `mock: false`. The
+flag and `--allow-mock` remain as a guard: if a stub backend is ever added, its
+outputs are refused by default, marked `diagnostic_only` in any figure, and can
+never be pooled with real runs.

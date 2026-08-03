@@ -23,7 +23,8 @@ Four steps sit on top of that evidence:
 **Do not compute a figure by hand from individual JSONL rows.** It is not that
 it is tedious; it is that the four traps below are invisible when you do:
 
-* pooling a mock run with a real one, or a v1 log with a v2 log;
+* pooling runs that should not be pooled — a v1 log with a v2 log, or two
+  runs scored against different corpus bytes;
 * treating decoding seeds, permutation seeds and debate rounds as if they were
   independent questions (they are replications of the same question);
 * pooling `sampled` routing with `enumerated` routing — different mechanisms;
@@ -38,7 +39,6 @@ The scripts refuse all four. A hand-written aggregation does not.
 python analysis/run_headline_analysis.py \
     outputs/exp_my_experiment \
     --output analysis_artifacts/pilot \
-    --allow-mock \
     --w-rho 1.0 --w-adoption 1.0 \
     --heatmap-metric accuracy
 ```
@@ -52,29 +52,29 @@ one it skips. Add `--strict` to make a missing requested figure a non-zero exit
 
 ```bash
 # 1. validate (exit code 0 only if there are no errors)
-python analysis/validate_runs.py outputs/exp_a outputs/exp_b --allow-mock
+python analysis/validate_runs.py outputs/exp_a outputs/exp_b
 python analysis/validate_runs.py outputs/ --json validation.json
 
 # 2. normalise
 python analysis/collect_runs.py \
     outputs/exp_a outputs/exp_b \
-    --output analysis_artifacts/my_analysis \
-    --allow-mock
+    --output analysis_artifacts/my_analysis
 
 # 3. what can be drawn?
 python analysis/check_figure_readiness.py analysis_artifacts/my_analysis
 
 # 4. figures (each writes CSV + PNG + PDF + metadata JSON)
-python analysis/figure_accuracy_vs_adversaries.py analysis_artifacts/my_analysis --allow-mock
-python analysis/figure_empirical_ic_regret.py    analysis_artifacts/my_analysis --allow-mock \
+python analysis/figure_accuracy_vs_adversaries.py analysis_artifacts/my_analysis
+python analysis/figure_empirical_ic_regret.py    analysis_artifacts/my_analysis \
     --w-rho 1.0 --w-adoption 1.0
-python analysis/figure_exposure_vs_confidence.py analysis_artifacts/my_analysis --allow-mock
-python analysis/figure_accuracy_vs_cost.py       analysis_artifacts/my_analysis --allow-mock
-python analysis/figure_routing_heatmap.py        analysis_artifacts/my_analysis --allow-mock \
+python analysis/figure_exposure_vs_confidence.py analysis_artifacts/my_analysis
+python analysis/figure_accuracy_vs_cost.py       analysis_artifacts/my_analysis
+python analysis/figure_routing_heatmap.py        analysis_artifacts/my_analysis \
     --metric accuracy
 ```
 
-Shared flags: `--allow-mock`, `--bootstrap-repetitions N`, `--analysis-seed N`.
+Shared flags: `--bootstrap-repetitions N`, `--analysis-seed N` (and
+`--allow-mock`, see below).
 Two things are never guessed: Figure 2's utility weights (`--w-rho`,
 `--w-adoption`) and Figure 5's `--metric`.
 
@@ -189,26 +189,26 @@ the readiness report will place it correctly.
   strategyproofness regret; the limitations are listed in the script's
   docstring and copied into its metadata.
 
-## The two PEAR diagnostics (not part of this layer)
+## The PEAR diagnostic (not part of this layer)
 
-* `check_logs.py` — a **PEAR routing diagnostic**: per-round out-degrees,
-  shares, confidences and targeted-cross eligibility straight from
-  `routing.jsonl`.
-* `check_inflation_scenario.py` — a **mock mechanism sanity check**: asserts
-  that the confidence attack lands, is scoped to the listed agent, and that the
-  oracle clamps it.
+`check_logs.py` is a **PEAR routing diagnostic**: per-round out-degrees,
+shares, confidences and targeted-cross eligibility straight from
+`routing.jsonl`. It reads the raw logs directly and is deliberately
+mechanism-specific — it is not the common analysis API, and the figure scripts
+do not use it.
 
-Both read the raw logs directly and are deliberately mechanism-specific. They
-are not the common analysis API, and the figure scripts do not use them.
+## The `mock` flag and `--allow-mock`
 
-## Mock runs
+Every run records `mock: true|false`, taken from whether its backend declares
+itself a canned one. No canned backend ships with this repository, so runs are
+`mock: false` and `--allow-mock` is a no-op in practice.
 
-A mock run is the offline canned provider (`mock: true` everywhere). Running
-the whole pipeline on mock outputs proves that the pipeline works — and nothing
-else. Mock figures are marked `diagnostic_only: true` in their CSV and
-metadata, titled `[MOCK DATA - pipeline diagnostic, not a result]`, and stamped
-with a MOCK watermark. Mixing mock and real runs is rejected outright.
+The machinery stays because the guarantee is worth keeping: anything flagged
+`mock` is refused unless `--allow-mock` is passed, figures drawn from it are
+marked `diagnostic_only: true` and watermarked, and mixing flagged with
+unflagged runs is rejected outright. If a canned or stub backend is ever added,
+its outputs cannot silently be pooled with real ones.
 
-Small mock sweeps also produce confidence intervals. Those intervals are an
-engineering check that the statistics code runs; they are not scientific
-uncertainty about any model.
+Note that on small datasets the confidence intervals are still narrow-sample
+artefacts. They describe variation in the table, not scientific uncertainty
+about a model — check `n_examples` before reading anything into them.
