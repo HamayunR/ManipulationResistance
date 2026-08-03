@@ -23,7 +23,7 @@ Conventions shared by every backend
 from __future__ import annotations
 
 import os
-from typing import Any, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from models.base import BaseLLM, Generation
 from utils.logging import get_logger
@@ -264,6 +264,7 @@ class HFLLM(BaseLLM):
     ) -> None:
         try:
             import torch  # type: ignore
+            import transformers  # type: ignore
             from transformers import (  # type: ignore
                 AutoModelForCausalLM,
                 AutoTokenizer,
@@ -275,7 +276,7 @@ class HFLLM(BaseLLM):
                 "`pip install transformers torch accelerate`."
             ) from exc
 
-        torch_dtype = {
+        resolved_dtype = {
             "auto": "auto",
             "bfloat16": torch.bfloat16,
             "float16": torch.float16,
@@ -287,13 +288,49 @@ class HFLLM(BaseLLM):
         self._tokenizer = AutoTokenizer.from_pretrained(
             model, token=token, trust_remote_code=trust_remote_code
         )
-        self._model_obj = AutoModelForCausalLM.from_pretrained(
-            model,
-            token=token,
-            torch_dtype=torch_dtype,
-            device_map=device,
-            trust_remote_code=trust_remote_code,
+
+        load_kwargs: Dict[str, Any] = {
+            "token": token,
+            "trust_remote_code": trust_remote_code,
+        }
+        # transformers 5 renamed ``torch_dtype`` to ``dtype`` and warns on the
+        # old name; 4.x only knows the old one. Pick by what is accepted so the
+        # backend works across the range in requirements.txt.
+        import inspect
+
+        signature = inspect.signature(AutoModelForCausalLM.from_pretrained)
+        takes_kwargs = any(
+            param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
         )
+        dtype_key = (
+            "dtype"
+            if ("dtype" in signature.parameters or takes_kwargs)
+            and int(getattr(transformers, "__version__", "0").split(".")[0] or 0) >= 5
+            else "torch_dtype"
+        )
+        load_kwargs[dtype_key] = resolved_dtype
+
+        # Apple Silicon: accelerate's device_map placement segfaults while
+        # sharding onto "mps" (observed on torch 2.13 / transformers 5.14).
+        # Loading on CPU and moving the whole model afterwards is the
+        # documented path, and a model small enough to fit unified memory
+        # never needed sharding in the first place.
+        mps_requested = str(device).lower() in {"mps", "mps:0"}
+        if not mps_requested:
+            load_kwargs["device_map"] = device
+
+        self._model_obj = AutoModelForCausalLM.from_pretrained(model, **load_kwargs)
+        if mps_requested:
+            if not getattr(torch.backends, "mps", None) or not torch.backends.mps.is_available():
+                raise RuntimeError(
+                    "device: mps was requested but this PyTorch build has no "
+                    "working MPS backend. Use device: cpu, or install a macOS "
+                    "arm64 build of torch."
+                )
+            self._model_obj = self._model_obj.to("mps")
+        self._model_obj.eval()
+
         self._pipe = pipeline(
             "text-generation",
             model=self._model_obj,

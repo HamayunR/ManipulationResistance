@@ -19,6 +19,23 @@ models:
     max_tokens: 512
     max_tokens_param: max_completion_tokens
 
+  # Local, on-device. Small enough for Apple Silicon unified memory: fp16
+  # weights are ~1 GB, so it runs on an M-series laptop with no GPU server and
+  # no API cost. Intended for pipeline development and debugging -- at 0.5B the
+  # instruction-following is weak, so treat its numbers as smoke-test output,
+  # not results.
+  #
+  # device: mps uses the Metal backend. The model is loaded on CPU and moved,
+  # because accelerate's device_map sharding onto "mps" segfaults.
+  qwen2.5-0.5b-hf:
+    provider: hf
+    model: Qwen/Qwen2.5-0.5B-Instruct
+    dtype: float16
+    device: mps
+    temperature: 0.2
+    max_new_tokens: 512
+    trust_remote_code: false
+
   claude-haiku-4-5:
     provider: anthropic
     model: claude-haiku-4-5

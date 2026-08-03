@@ -12,7 +12,7 @@ debate:
   k_regular_degree: 2      # Incoming critiques per agent for k_regular.
   mode: pear_full          # cot | cot_sc | fixed | pear_full
   agg_mode: majority_vote  # majority_vote | llm_judge
-  max_tokens_per_call: 512
+  max_tokens_per_call: 1024 # change back to 512?
   mc_permutations: 100
   routing_temperature: 0.7
   alpha_targeted_cross: 0.2   # High-confidence dissenting source -> low-confidence target.
