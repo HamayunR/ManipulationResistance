@@ -19,9 +19,13 @@ from pathlib import Path
 import pytest
 
 from data.local import (
+    CorpusMismatch,
     CorpusRecord,
     DatasetNotAvailable,
     SAMPLE_SPLIT,
+    SKIP_CHECK_ENV,
+    check_corpus,
+    corpus_sha256,
     available_splits,
     load_corpus,
     read_records,
@@ -383,6 +387,80 @@ def test_parse_answer_is_usable_as_a_bare_callable(tmp_path: Path) -> None:
         parser = task.parse_answer
         assert parser("") == ""
         assert isinstance(parser("some model output"), str)
+
+
+# --------------------------------------------------- corpus integrity --
+def _fetched_corpus(tmp_path: Path, records) -> Path:
+    """A corpus plus the manifest a real fetch would have written."""
+    info = write_records(tmp_path / "gsm8k" / "test.jsonl", records)
+    write_manifest(
+        tmp_path / "gsm8k",
+        {"dataset": "gsm8k", "splits": {"test": {"sha256": info["sha256"], "n_examples": info["n_examples"]}}},
+    )
+    return tmp_path / "gsm8k" / "test.jsonl"
+
+
+def test_intact_corpus_verifies(tmp_path: Path) -> None:
+    _fetched_corpus(tmp_path, [CorpusRecord("a", "q", "1")])
+
+    integrity = check_corpus(
+        tmp_path / "gsm8k" / "test.jsonl", name="gsm8k", split="test", data_dir=tmp_path
+    )
+
+    assert integrity.verified is True
+    assert integrity.sha256 == integrity.expected
+
+
+def test_edited_corpus_is_refused_at_load_time(tmp_path: Path) -> None:
+    """The check must fire when the data is loaded, not only in a command.
+
+    A corpus that changed after the fetch silently changes what every run is
+    scored against, and nothing downstream can recover the difference.
+    """
+    path = _fetched_corpus(tmp_path, [CorpusRecord("a", "q", "1")])
+    path.write_text('{"answer": "2", "id": "a", "question": "q"}\n', encoding="utf-8")
+
+    with pytest.raises(CorpusMismatch) as excinfo:
+        load_task("gsm8k", split="test", data_dir=str(tmp_path))
+
+    message = str(excinfo.value)
+    assert "does not match the checksum" in message
+    assert "--force" in message  # tells you how to fix it
+    assert SKIP_CHECK_ENV in message  # ... and how to override, knowingly
+
+
+def test_the_override_is_explicit(tmp_path: Path, monkeypatch) -> None:
+    path = _fetched_corpus(tmp_path, [CorpusRecord("a", "q", "1")])
+    path.write_text('{"answer": "2", "id": "a", "question": "q"}\n', encoding="utf-8")
+    monkeypatch.setenv(SKIP_CHECK_ENV, "1")
+
+    task = load_task("gsm8k", split="test", data_dir=str(tmp_path))
+
+    assert len(task) == 1
+    # The run still records that the corpus was not the fetched one.
+    assert task.corpus_status == "no_manifest"
+
+
+def test_corpus_without_a_manifest_loads_but_says_so(tmp_path: Path) -> None:
+    write_records(tmp_path / "gsm8k" / "test.jsonl", [CorpusRecord("a", "q", "1")])
+
+    task = load_task("gsm8k", split="test", data_dir=str(tmp_path))
+
+    assert task.corpus_status == "no_manifest"
+    assert task.corpus_sha256
+
+
+def test_sample_split_is_marked_synthetic(tmp_path: Path) -> None:
+    task = load_task("gsm8k", split=SAMPLE_SPLIT, data_dir=str(tmp_path))
+
+    assert task.corpus_status == "synthetic_sample"
+
+
+def test_write_and_check_agree_on_the_checksum(tmp_path: Path) -> None:
+    """One definition of the checksum, used by the writer and the reader."""
+    info = write_records(tmp_path / "x" / "test.jsonl", [CorpusRecord("a", "q", "1")])
+
+    assert corpus_sha256(tmp_path / "x" / "test.jsonl") == info["sha256"]
 
 
 # ------------------------------------------------------------ gated access --

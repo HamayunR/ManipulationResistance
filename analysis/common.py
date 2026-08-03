@@ -585,6 +585,7 @@ class NormalizedRun:
     model: Optional[str]
     dataset: Optional[str]
     dataset_split: Optional[str]
+    dataset_sha256: Optional[str] = None
     config: Dict[str, Any] = field(default_factory=dict)
     summary: Dict[str, Any] = field(default_factory=dict)
     conditions: Dict[str, ConditionMeta] = field(default_factory=dict)
@@ -812,6 +813,7 @@ def load_pear_run(run_dir: str | os.PathLike) -> NormalizedRun:
         model=summary.get("model") or (config.get("agents") or {}).get("model"),
         dataset=(config.get("dataset") or {}).get("name") or summary.get("dataset"),
         dataset_split=(config.get("dataset") or {}).get("split") or summary.get("dataset_split"),
+        dataset_sha256=summary.get("dataset_sha256"),
         config=config,
         summary=summary,
         conditions=conditions,

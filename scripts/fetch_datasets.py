@@ -479,8 +479,7 @@ def verify(data_dir: str | Path = "data") -> int:
     corpus changes what the whole experiment is scored against, and nothing
     downstream can detect it once the runs exist.
     """
-    from data.local import read_manifest, read_records
-    import hashlib
+    from data.local import corpus_sha256, read_manifest, read_records
 
     data_dir = Path(data_dir)
     problems = 0
@@ -496,12 +495,7 @@ def verify(data_dir: str | Path = "data") -> int:
                 print(f"  {name}/{split:<12} MISSING {path}")
                 problems += 1
                 continue
-            digest = hashlib.sha256()
-            with open(path, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    if line.strip():
-                        digest.update(line.rstrip("\n").encode("utf-8"))
-            actual = digest.hexdigest()
+            actual = corpus_sha256(path)
             records = read_records(path)
             checked += 1
             status = "ok"

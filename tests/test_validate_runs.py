@@ -296,6 +296,33 @@ def test_oracle_run_with_complete_maps_is_valid(tmp_path: Path) -> None:
     assert report.ok, [i.render() for i in report.errors()]
 
 
+# ----------------------------------------------------------- corpus bytes --
+def test_runs_scoring_different_corpora_are_not_pooled(tmp_path: Path) -> None:
+    """Same benchmark split, different corpus bytes: not the same questions."""
+    root = tmp_path / "exp"
+    make_pear_run(root, "before")
+    make_pear_run(root, "after")
+    patch_summary(root / "before", dataset="gsm8k", dataset_split="test", dataset_sha256="a" * 64)
+    patch_summary(root / "after", dataset="gsm8k", dataset_split="test", dataset_sha256="b" * 64)
+
+    report = validate_runs([root], allow_mock=True)
+
+    assert "dataset_corpus_mismatch" in error_codes(report)
+    assert any("not comparable" in i.message for i in report.errors())
+
+
+def test_matching_corpora_pool_fine(tmp_path: Path) -> None:
+    root = tmp_path / "exp"
+    make_pear_run(root, "one")
+    make_pear_run(root, "two")
+    for name in ("one", "two"):
+        patch_summary(root / name, dataset="gsm8k", dataset_split="test", dataset_sha256="a" * 64)
+
+    report = validate_runs([root], allow_mock=True)
+
+    assert "dataset_corpus_mismatch" not in error_codes(report)
+
+
 # --------------------------------------------------------------- coverage --
 def test_missing_seed_combination_is_reported(tmp_path: Path) -> None:
     run = make_pear_run(tmp_path / "exp", "gap", perm_seeds=(10, 11))

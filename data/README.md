@@ -19,6 +19,7 @@ python scripts/fetch_datasets.py all              # the four public benchmarks
 python scripts/fetch_datasets.py gsm8k --split train
 python scripts/fetch_datasets.py mmlu_pro --limit 500      # pilot-sized subset
 python scripts/fetch_datasets.py --verify         # checksum every fetched corpus
+                                                 # (runs do this automatically too)
 ```
 
 GPQA is gated. Accept the conditions on its dataset page, then:
@@ -58,6 +59,27 @@ per checkout (and on each cluster node, or fetch to shared storage and point
 `data/<name>/manifest.json` records the source repo, the resolved commit sha,
 the config and upstream split, the row count, the sha256 of the written file,
 any `--limit` cap, the option-shuffle seed and the fetch timestamp.
+
+### Integrity is checked automatically
+
+Every run verifies the corpus against that checksum **when it loads the data**,
+before any tokens are spent. ~13 ms for the largest corpus. If the file changed
+after it was fetched, the run refuses to start and prints the re-fetch command;
+`PEAR_SKIP_CORPUS_CHECK=1` overrides it deliberately for one run.
+
+Each run then records what it scored in its `summary.json`:
+
+```json
+{"dataset": "gsm8k", "dataset_split": "test",
+ "dataset_sha256": "0e39e9ffa05a640e...", "dataset_integrity": "verified"}
+```
+
+and `analysis/validate_runs.py` refuses to pool runs of the same split that
+scored different corpus bytes (`dataset_corpus_mismatch`).
+
+So there is nothing to remember. `python scripts/fetch_datasets.py --verify` is
+the standalone version — useful for checking a machine before a long sweep, or
+after copying corpora to shared storage — not a step you have to run.
 
 ### Why files rather than a dataset library call
 

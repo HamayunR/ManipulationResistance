@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Type
 
-from data.local import CorpusRecord, load_corpus
+from data.local import CorpusRecord, check_corpus, corpus_path, load_corpus
 from data.normalize import (
     format_options,
     math_equal,
@@ -215,6 +215,13 @@ class LocalCorpusTask(Task):
     #: Human-readable hint appended to the "not fetched" error.
     fetch_hint: str = ""
 
+    #: Checksum of the corpus this task loaded, and how it compared to the
+    #: manifest. Written into the run's summary.json so every result records
+    #: which bytes it was scored against.
+    corpus_sha256: Optional[str] = None
+    corpus_status: Optional[str] = None
+    corpus_file: Optional[str] = None
+
     def load_examples(self) -> Sequence[Example]:
         records = load_corpus(
             name=self.name,
@@ -222,6 +229,17 @@ class LocalCorpusTask(Task):
             data_dir=self.data_dir,
             fetch_hint=self.fetch_hint,
         )
+        # Verified on every load, not in a command someone has to remember.
+        # ~13 ms for the largest corpus; the failure it catches is silent and
+        # unrecoverable once runs exist.
+        path = corpus_path(self.data_dir, self.name, self.split)
+        if path is not None:
+            integrity = check_corpus(
+                path, name=self.name, split=self.split, data_dir=self.data_dir
+            )
+            self.corpus_sha256 = integrity.sha256
+            self.corpus_status = integrity.status
+            self.corpus_file = str(integrity.path)
         return [self._to_example(record) for record in records]
 
     def _to_example(self, record: CorpusRecord) -> Example:

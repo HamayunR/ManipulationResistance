@@ -46,8 +46,98 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 SAMPLE_SPLIT = "sample"
 
 
+#: Set to "1" to load a corpus whose checksum no longer matches its manifest.
+#: The only legitimate use is deliberately editing a corpus and not having
+#: re-fetched it yet; it is an escape hatch, not a setting to leave on.
+SKIP_CHECK_ENV = "PEAR_SKIP_CORPUS_CHECK"
+
+
 class DatasetNotAvailable(FileNotFoundError):
     """Raised when a benchmark split has not been fetched yet."""
+
+
+class CorpusMismatch(RuntimeError):
+    """Raised when a corpus no longer matches the manifest written for it."""
+
+
+def corpus_sha256(path: str | os.PathLike) -> str:
+    """Checksum of a corpus file, line by line, ignoring line endings.
+
+    The single definition of "the checksum of this corpus". The writer, the
+    load-time check and ``fetch_datasets.py --verify`` all call it, so they
+    cannot drift into disagreeing about whether a file is intact.
+    """
+    digest = hashlib.sha256()
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                digest.update(line.rstrip("\n").encode("utf-8"))
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class CorpusIntegrity:
+    """Outcome of checking one corpus file against its manifest."""
+
+    path: Path
+    sha256: str
+    expected: Optional[str]
+    status: str  # "verified" | "no_manifest" | "synthetic_sample"
+
+    @property
+    def verified(self) -> bool:
+        return self.status == "verified"
+
+
+def check_corpus(
+    path: str | os.PathLike,
+    *,
+    name: str,
+    split: str,
+    data_dir: str | os.PathLike,
+) -> CorpusIntegrity:
+    """Compare a corpus against the checksum recorded when it was fetched.
+
+    Raises :class:`CorpusMismatch` when they differ. That is deliberately fatal
+    and deliberately *here*, at load time, rather than in a command someone has
+    to remember: a corpus that changed after it was fetched silently changes
+    what every run is scored against, and no downstream check can recover the
+    difference once the runs exist. It costs about ten milliseconds.
+
+    A corpus with no manifest (hand-made, or the packaged synthetic sample) is
+    reported as unverified rather than rejected -- there is nothing to compare
+    it to, and saying so is more useful than refusing to run.
+    """
+    path = Path(path)
+    actual = corpus_sha256(path)
+
+    if str(split) == SAMPLE_SPLIT:
+        return CorpusIntegrity(path, actual, None, "synthetic_sample")
+
+    manifest = read_manifest(data_dir, name) or {}
+    expected = ((manifest.get("splits") or {}).get(split) or {}).get("sha256")
+    if not expected:
+        return CorpusIntegrity(path, actual, None, "no_manifest")
+
+    if actual != expected:
+        if os.environ.get(SKIP_CHECK_ENV) == "1":
+            return CorpusIntegrity(path, actual, expected, "no_manifest")
+        raise CorpusMismatch(
+            f"{path} does not match the checksum recorded when it was fetched.\n"
+            f"  expected {expected}\n"
+            f"  actual   {actual}\n"
+            "\n"
+            "The corpus changed after the fetch, so this run would be scored "
+            "against different data than earlier runs of the same split -- and "
+            "nothing downstream could tell afterwards.\n"
+            "\n"
+            "Re-fetch it:\n"
+            f"    python scripts/fetch_datasets.py {name} --split {split} --force\n"
+            "or, if you changed it on purpose and accept that earlier runs are "
+            f"not comparable, set {SKIP_CHECK_ENV}=1 for this run and re-fetch "
+            "when you can."
+        )
+    return CorpusIntegrity(path, actual, expected, "verified")
 
 
 @dataclass(frozen=True)
@@ -149,15 +239,15 @@ def write_records(
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256()
     count = 0
     with open(path, "w", encoding="utf-8") as handle:
         for record in records:
-            line = json.dumps(record.as_json(), ensure_ascii=False, sort_keys=True)
-            handle.write(line + "\n")
-            digest.update(line.encode("utf-8"))
+            handle.write(json.dumps(record.as_json(), ensure_ascii=False, sort_keys=True) + "\n")
             count += 1
-    return {"path": str(path), "n_examples": count, "sha256": digest.hexdigest()}
+    # Re-read through the shared checksum function rather than hashing while
+    # writing, so the value recorded here is by construction the value the
+    # load-time check will compute.
+    return {"path": str(path), "n_examples": count, "sha256": corpus_sha256(path)}
 
 
 def write_manifest(directory: str | os.PathLike, payload: Dict[str, Any]) -> Path:
@@ -241,16 +331,21 @@ def load_corpus(
 
 
 __all__ = [
+    "CorpusIntegrity",
+    "CorpusMismatch",
     "CorpusRecord",
     "DatasetNotAvailable",
     "FIXTURES_DIR",
     "MANIFEST_NAME",
     "SAMPLE_SPLIT",
     "available_splits",
+    "check_corpus",
     "corpus_path",
+    "corpus_sha256",
     "load_corpus",
     "read_manifest",
     "read_records",
+    "SKIP_CHECK_ENV",
     "write_manifest",
     "write_records",
 ]

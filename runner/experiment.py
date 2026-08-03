@@ -2423,6 +2423,12 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
         "dataset": task.name,
         "dataset_split": task.split,
         "dataset_n_examples": len(task),
+        # Which bytes were scored. Verified against the corpus manifest at load
+        # time; recorded here so two runs can be compared without trusting that
+        # the file on disk never moved between them.
+        "dataset_sha256": getattr(task, "corpus_sha256", None),
+        "dataset_file": getattr(task, "corpus_file", None),
+        "dataset_integrity": getattr(task, "corpus_status", None),
         "judge_model": judge_name,
         "parallel_examples": parallel_examples,
         "conditions": [

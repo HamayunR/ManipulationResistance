@@ -675,6 +675,28 @@ def _cross_run_checks(report: ValidationReport, *, allow_mock: bool) -> None:
             )
         )
 
+    # Same benchmark split, different corpus bytes: the runs did not answer the
+    # same questions. The checksum is stamped on each run at load time, so this
+    # is detectable here even though nothing in the results rows would show it.
+    corpora: Dict[Tuple[Any, Any], Set[str]] = defaultdict(set)
+    for entry in loaded:
+        run = entry.run
+        if run is not None and run.dataset_sha256:
+            corpora[(run.dataset, run.dataset_split)].add(run.dataset_sha256)
+    for (dataset, split), checksums in sorted(corpora.items(), key=str):
+        if len(checksums) > 1:
+            add(
+                Issue(
+                    ERROR,
+                    "dataset_corpus_mismatch",
+                    f"runs on {dataset}/{split} scored {len(checksums)} different "
+                    f"corpus files (sha256 {sorted(c[:12] for c in checksums)}). "
+                    "They did not answer the same questions, so their accuracies "
+                    "are not comparable. Re-fetch the split and re-run, or "
+                    "analyse the groups separately.",
+                )
+            )
+
     modes = sorted({m for r in loaded for m in r.routing_modes})
     report.routing_modes = modes
     if len(modes) > 1:
