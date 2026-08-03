@@ -1,0 +1,43 @@
+extends: default.yaml
+
+# Verified-confidence comparison.
+#
+# Two arms of the same mechanism, differing only in what the router scores:
+#
+#   pear_unverified  the router scores `reported_confidence`, the agent's own
+#                    self-report, taken at face value.
+#   pear_oracle      the router scores `verified_confidence` = min(reported,
+#                    g_i), so a self-report can talk an agent *down* but never
+#                    above the level the evidence supports.
+#
+# Everything else -- mode, base topology, routing weights, thresholds, seeds --
+# is inherited from default.yaml, so any difference between the two arms is
+# attributable to the verification socket alone.
+#
+# The oracle reads the dataset's gold answer (g_i = 5 when the agent's current
+# answer is correct, 1 otherwise). It is a *ceiling* on what any corroboration
+# signal could achieve, not a deployable defence. Treat its numbers as an upper
+# bound, and say so wherever they are reported.
+#
+# As written this is a CLEAN comparison: no robustness block, so it prices what
+# verification costs when nobody is attacking (proposal RQ6 / Figure 4). To
+# measure what it *buys* under attack, add a confidence-reporting attack to
+# `debate.robustness` here, or run this config and an attacked copy as paired
+# arms.
+#
+# Usage:
+#   python main.py --config configs/confidence_comparison.yaml \
+#       --dataset gsm8k --num-examples 100 --model qwen2.5-7b-vllm
+
+conditions:
+  - name: pear_unverified
+    debate:
+      mode: pear_full
+      verified_confidence:
+        mode: none
+
+  - name: pear_oracle
+    debate:
+      mode: pear_full
+      verified_confidence:
+        mode: oracle
