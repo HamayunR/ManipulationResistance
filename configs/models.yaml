@@ -54,6 +54,29 @@ models:
     max_new_tokens: 512
     trust_remote_code: false
 
+  # Whitebox entries for the DebUnc baseline (baselines/debunc). It measures
+  # confidence from full-vocabulary token probabilities, so it needs
+  # provider: hf -- an API backend does not expose them and vLLM does not
+  # return them. These two checkpoints are the ones the DebUnc paper
+  # evaluates; the harness itself is model-agnostic.
+  mistral-7b-instruct-hf:
+    provider: hf
+    model: mistralai/Mistral-7B-Instruct-v0.2
+    dtype: bfloat16
+    device: auto
+    temperature: 1.0
+    max_new_tokens: 1024
+    trust_remote_code: false
+
+  llama-3-8b-instruct-hf:
+    provider: hf
+    model: meta-llama/Meta-Llama-3-8B-Instruct
+    dtype: bfloat16
+    device: auto
+    temperature: 1.0
+    max_new_tokens: 1024
+    trust_remote_code: false
+
   claude-haiku-4-5:
     provider: anthropic
     model: claude-haiku-4-5

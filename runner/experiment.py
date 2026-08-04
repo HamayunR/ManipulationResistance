@@ -6,7 +6,6 @@ imports :func:`run_experiment` and provides the argument parsing.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
@@ -23,6 +22,7 @@ try:  # tqdm is optional; vLLM environments usually already include it.
 except Exception:  # pragma: no cover - optional dependency fallback
     _tqdm = None
 
+from baselines.debunc import is_debunc_mode, run_debunc_example
 from data.tasks import Task, load_task
 from core.topology import (
     apply_perm_to_topology,
@@ -58,6 +58,7 @@ from prompts import (
     MALICIOUS_INITIAL_ANSWER_TEMPLATE,
 )
 from utils.budget import Budget
+from utils.json_output import JsonParse, parse_json_object
 from utils.logging import RunPaths, get_logger, setup_run_logging
 from utils.seed import seeded_rng, set_global_seeds
 from utils.tracing import JsonlTracer, dumps_safe
@@ -135,35 +136,15 @@ class RunResult:
 
 
 # Two-phase PEAR execution helpers
-def _extract_json_object(text: str) -> Dict[str, Any]:
-    """Best-effort parse of a model JSON object."""
-    if not text:
-        return {}
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    candidate = text[start : end + 1]
-    try:
-        payload = json.loads(candidate)
-        return payload if isinstance(payload, dict) else {}
-    except json.JSONDecodeError:
-        # Common local-model failure: trailing commas in JSON-ish output.
-        cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
-        try:
-            payload = json.loads(cleaned)
-            return payload if isinstance(payload, dict) else {}
-        except json.JSONDecodeError:
-            return {}
-
-
-def _json_object_missing(text: str) -> bool:
-    """True when a non-empty model output yielded no JSON object.
+def _json_failed(text: str, parse: JsonParse) -> bool:
+    """Whether reading a non-empty ``text`` recovered nothing.
 
     Distinguishes a genuine parse failure from an empty completion: an empty
-    string is a generation problem, not a formatting one.
+    string is a generation problem, not a formatting one. The reading itself --
+    including the escaping repair that mathematics in a string field needs --
+    is :func:`utils.json_output.parse_json_object`.
     """
-    return bool(str(text or "").strip()) and not _extract_json_object(text)
+    return bool(str(text or "").strip()) and not parse.ok
 
 
 #: Inclusive bounds of the reported-confidence rubric (see prompts.CONFIDENCE_RUBRIC).
@@ -180,8 +161,15 @@ def _clamp_confidence(value: Any) -> int:
         return 3
 
 
-def _parse_answer_payload(text: str, parse_answer: Callable[[str], str]) -> Dict[str, Any]:
-    payload = _extract_json_object(text)
+def _parse_answer_payload(
+    text: str,
+    parse_answer: Callable[[str], str],
+    *,
+    parse: Optional[JsonParse] = None,
+) -> Dict[str, Any]:
+    """Read one agent payload. Pass ``parse`` to reuse an already-decoded read."""
+    parse = parse if parse is not None else parse_json_object(text)
+    payload = parse.payload
     answer = str(payload.get("answer") or "").strip()
     if not answer:
         answer = parse_answer(text)
@@ -199,6 +187,10 @@ def _parse_answer_payload(text: str, parse_answer: Callable[[str], str]) -> Dict
         "critique_response": _normalize_critique_response(
             payload.get("critique_response") or {}
         ),
+        # Which recovery step read this payload. Anything but "none" means the
+        # text handed to the decoder was not byte-for-byte what the model
+        # emitted, so a reader can tell a repaired field from a verbatim one.
+        "json_repair": parse.repair,
         "raw": text,
     }
 
@@ -224,8 +216,14 @@ def _normalize_critique_response(raw: Any) -> Dict[str, Dict[str, str]]:
     return out
 
 
-def _parse_critiques(text: str, expected_targets: Iterable[int]) -> List[Dict[str, Any]]:
-    payload = _extract_json_object(text)
+def _parse_critiques(
+    text: str,
+    expected_targets: Iterable[int],
+    *,
+    parse: Optional[JsonParse] = None,
+) -> List[Dict[str, Any]]:
+    """Read one critique payload. Pass ``parse`` to reuse an already-decoded read."""
+    payload = (parse if parse is not None else parse_json_object(text)).payload
     reviews = payload.get("reviews") if isinstance(payload, dict) else None
     parsed: List[Dict[str, Any]] = []
     if isinstance(reviews, list):
@@ -1312,33 +1310,6 @@ def _targeted_cross_eligibility(
     return out
 
 
-def _install_mock_log_marker() -> None:
-    """Prefix every subsequent log record with ``mock=true``.
-
-    Attached to the root logger, so it covers the run-directory ``run.log``
-    and the console alike. Idempotent: re-installing does not double-prefix.
-    """
-    import logging
-
-    marker = "mock=true | "
-
-    class _MockMarkerFilter(logging.Filter):
-        def filter(self, record: logging.LogRecord) -> bool:
-            message = str(record.getMessage())
-            if not message.startswith(marker):
-                record.msg = marker + message
-                record.args = ()
-            return True
-
-    root = logging.getLogger()
-    if any(isinstance(f, _MockMarkerFilter) for f in root.filters):
-        return
-    root.addFilter(_MockMarkerFilter())
-    for handler in root.handlers:
-        if not any(isinstance(f, _MockMarkerFilter) for f in handler.filters):
-            handler.addFilter(_MockMarkerFilter())
-
-
 def safe_div_local(num: float, den: float) -> float:
     return float("nan") if den == 0 else float(num) / float(den)
 
@@ -1492,8 +1463,23 @@ def run_one(
     perm_seed: int,
     judge_llm: Optional[BaseLLM] = None,
 ) -> Dict[str, Any]:
-    """Run one example through the ExpPlan_v3 two-phase PEAR loop."""
+    """Run one example through the ExpPlan_v3 two-phase PEAR loop.
+
+    Baseline methods from other papers have their own debate protocol and are
+    dispatched to their own module (``baselines/``) rather than folded into this
+    loop; they return the same row shape, so everything downstream is unchanged.
+    """
     mode = str(debate_cfg.get("mode", "pear_full"))
+    if is_debunc_mode(mode):
+        return run_debunc_example(
+            task,
+            example,
+            debate_cfg=debate_cfg,
+            llm=llm,
+            seed=seed,
+            perm_seed=perm_seed,
+            judge_llm=judge_llm,
+        )
     n_agents = int(debate_cfg.get("n_agents", 6))
     if mode == "cot":
         n_agents = 1
@@ -1538,6 +1524,10 @@ def run_one(
     }
     # Count of model outputs from which no JSON object could be recovered.
     parse_failures = 0
+    # Count of outputs that only decoded after their string literals were
+    # repaired -- almost always mathematics in a reasoning field. Recorded
+    # separately from parse_failures because these are recovered, not lost.
+    json_repairs = 0
     adversary_confidence = _clamp_confidence(malicious_cfg.get("adversary_confidence", 5))
     adversary_sticky = bool(malicious_cfg.get("sticky", True))
     adversary_answer: Optional[str] = None
@@ -1614,8 +1604,10 @@ def run_one(
     answer_history: List[Dict[int, str]] = []
     confidence_history: List[Dict[int, int]] = []
     for agent_id, gen in enumerate(gens, start=1):
-        parse_failures += int(_json_object_missing(gen.text))
-        parsed = _parse_answer_payload(gen.text, task.parse_answer)
+        parse = parse_json_object(gen.text)
+        parse_failures += int(_json_failed(gen.text, parse))
+        json_repairs += int(parse.repaired)
+        parsed = _parse_answer_payload(gen.text, task.parse_answer, parse=parse)
         if adversary_id is not None and agent_id == adversary_id:
             adversary_answer, event = _apply_malicious_payload(
                 task=task,
@@ -1646,6 +1638,9 @@ def run_one(
                 "confidence": parsed["confidence"],
                 "reasoning": parsed["reasoning"],
                 "correct": is_correct(parsed["answer"]),
+                # "none" unless the payload only decoded after repair; see
+                # utils.json_output.
+                "json_repair": parsed["json_repair"],
                 "prompt_tokens": gen.prompt_tokens,
                 "completion_tokens": gen.completion_tokens,
             }
@@ -1835,8 +1830,12 @@ def run_one(
                         "content": gen.text,
                     }
                 )
-                parse_failures += int(_json_object_missing(gen.text))
-                parsed_critiques = _parse_critiques(gen.text, source_targets[source])
+                parse = parse_json_object(gen.text)
+                parse_failures += int(_json_failed(gen.text, parse))
+                json_repairs += int(parse.repaired)
+                parsed_critiques = _parse_critiques(
+                    gen.text, source_targets[source], parse=parse
+                )
                 if critique_noise_cfg:
                     parsed_critiques, noise_events, noise_stats = _apply_critique_noise(
                         parsed_critiques,
@@ -1910,8 +1909,10 @@ def run_one(
             budget=budget,
         )
         for agent_id, gen in zip(update_agents, update_gens):
-            parse_failures += int(_json_object_missing(gen.text))
-            parsed = _parse_answer_payload(gen.text, task.parse_answer)
+            parse = parse_json_object(gen.text)
+            parse_failures += int(_json_failed(gen.text, parse))
+            json_repairs += int(parse.repaired)
+            parsed = _parse_answer_payload(gen.text, task.parse_answer, parse=parse)
             if adversary_id is not None and agent_id == adversary_id and adversary_sticky:
                 adversary_answer, malicious_event = _apply_malicious_payload(
                     task=task,
@@ -1943,6 +1944,7 @@ def run_one(
                 "flipped": previous[agent_id]["answer"] != parsed["answer"],
                 "correct_before": is_correct(previous[agent_id]["answer"]),
                 "correct_after": is_correct(parsed["answer"]),
+                "json_repair": parsed["json_repair"],
                 "prompt_tokens": gen.prompt_tokens,
                 "completion_tokens": gen.completion_tokens,
             }
@@ -2072,12 +2074,14 @@ def run_one(
     )
 
     diagnostics["parse_failures"] = float(parse_failures)
+    diagnostics["json_repairs"] = float(json_repairs)
 
     return {
         "example_id": example.id,
         "decision": decision,
         "correct": bool(correct),
         "parse_failures": int(parse_failures),
+        "json_repairs": int(json_repairs),
         "n_messages": len(messages),
         "budget": budget.to_dict(),
         "trace_events": trace_events,
@@ -2143,9 +2147,6 @@ def run_condition(
     perm_seed_list = list(perm_seeds)
     parallel_examples = max(1, int(parallel_examples))
     condition_meta = {
-        # Tags every results row, trace event and transcript line produced by
-        # this condition, so a mock number can never be read as a real one.
-        "mock": bool(getattr(llm, "is_mock", False)),
         "mode": str(debate_cfg.get("mode", "")),
         "topology": str(debate_cfg.get("base_topology", "")),
         "base_topology": str(debate_cfg.get("base_topology", "")),
@@ -2370,13 +2371,6 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
             model_spec = model_name
         llm = build_llm(model_spec, registry=registry)
 
-    if getattr(llm, "is_mock", False):
-        _install_mock_log_marker()
-        _log.warning(
-            "MOCK PROVIDER ACTIVE - all outputs of this run are canned, not "
-            "model-generated. Results are tagged mock: true."
-        )
-
     judge_llm = None
     judge_name = cfg.get("agents", {}).get("judge_model")
     if judge_name and not random_only:
@@ -2415,7 +2409,6 @@ def run_experiment(config: ExperimentConfig) -> List[RunResult]:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "run_dir": str(paths.run_dir),
-        "mock": bool(getattr(llm, "is_mock", False)),
         "model": model_name,
         # The *resolved* dataset coordinates. ``dataset.split`` is usually left
         # unset in the config so each Task can apply its own default, which

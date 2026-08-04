@@ -46,13 +46,10 @@ from analysis.common import RunLoadError  # noqa: E402
 from analysis.figure_utils import (  # noqa: E402
     FigureError,
     add_common_arguments,
-    annotate_mock,
     bool_series,
     command_line,
     figure_paths,
-    mock_status_of,
     print_summary,
-    require_separable_mock_status,
     save_figure,
     title_for,
     write_metadata,
@@ -265,7 +262,7 @@ def check_grid(table: pd.DataFrame) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]
     return pd.concat(kept, ignore_index=True), rejected
 
 
-def plot(table: pd.DataFrame, *, metric: str, mock_status: str):
+def plot(table: pd.DataFrame, *, metric: str):
     groups = sorted({tuple(r) for r in table[list(GROUP_COLS)].itertuples(index=False)}, key=str)
     fig, axes = plt.subplots(1, len(groups), figsize=(5.2 * len(groups), 4.4), squeeze=False)
     for ax, group in zip(axes[0], groups):
@@ -301,9 +298,8 @@ def plot(table: pd.DataFrame, *, metric: str, mock_status: str):
         )
         fig.colorbar(image, ax=ax, label=METRIC_LABELS[metric])
 
-    fig.suptitle(title_for(f"{FIGURE_NAME}: {METRIC_LABELS[metric]}", mock_status), fontsize=12)
+    fig.suptitle(title_for(f"{FIGURE_NAME}: {METRIC_LABELS[metric]}"), fontsize=12)
     fig.tight_layout()
-    annotate_mock(fig, mock_status)
     return fig
 
 
@@ -311,7 +307,6 @@ def build_figure(
     analysis_dir: str | Path,
     *,
     metric: str,
-    allow_mock: bool = False,
     repetitions: int = DEFAULT_BOOTSTRAP_REPETITIONS,
     analysis_seed: int = DEFAULT_ANALYSIS_SEED,
     command: Optional[str] = None,
@@ -322,16 +317,10 @@ def build_figure(
     tables = load_tables(analysis_dir)
     runs, results, routing = tables["runs"], tables["results"], tables["routing"]
 
-    mock_status = mock_status_of(runs)
-    require_separable_mock_status(mock_status, allow_mock=allow_mock, what="Figure 5")
-    diagnostic_only = mock_status != "real"
-
     values = cell_values(metric, runs, results, routing, analysis_dir)
     table, rejected = check_grid(values)
     table = table.copy()
     table["metric"] = metric
-    table["mock"] = mock_status == "mock"
-    table["diagnostic_only"] = diagnostic_only
 
     columns = [
         *GROUP_COLS,
@@ -339,14 +328,12 @@ def build_figure(
         "metric",
         "value",
         *[c for c in ("clean_accuracy", "attacked_accuracy", "n_examples", "n_rows") if c in table],
-        "mock",
-        "diagnostic_only",
     ]
     table = table[columns]
 
     paths = figure_paths(analysis_dir, slug_for(metric))
     table.to_csv(paths.table, index=False)
-    save_figure(plot(table, metric=metric, mock_status=mock_status), paths)
+    save_figure(plot(table, metric=metric), paths)
 
     metadata = write_metadata(
         paths,
@@ -360,8 +347,6 @@ def build_figure(
             "grid_policy": "cells are never interpolated; missing cells are reported and left blank",
             "analysis_seed": analysis_seed,
             "bootstrap_repetitions": repetitions,
-            "mock_status": mock_status,
-            "diagnostic_only": diagnostic_only,
             "rejected_groups": rejected,
             "n_cells": int(len(table)),
             "command": command or command_line("figure_routing_heatmap.py"),
@@ -386,7 +371,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         result = build_figure(
             args.analysis_dir,
             metric=args.metric,
-            allow_mock=args.allow_mock,
             repetitions=args.bootstrap_repetitions,
             analysis_seed=args.analysis_seed,
             command=command_line("figure_routing_heatmap.py", argv),
@@ -397,8 +381,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print_summary(
         f"{FIGURE_NAME} [{args.metric}]",
         result["table"],
-        result["paths"],
-        diagnostic_only=result["metadata"]["diagnostic_only"],
+        result["paths"]
     )
     for group in result["rejected"]:
         print(f"  rejected: {group}")

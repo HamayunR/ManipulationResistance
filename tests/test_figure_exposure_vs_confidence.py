@@ -36,7 +36,6 @@ def write_tables(
             {
                 "run_id": "exp/run",
                 "method": "pear",
-                "mock": True,
                 "has_routing": True,
                 "has_accuracy": True,
                 "has_token_usage": True,
@@ -67,7 +66,6 @@ def routing_row(**overrides) -> dict:
         "out_degree_share": 0.2,
         "source_eligible": False,
         "target_eligible": True,
-        "mock": True,
     }
     row.update(overrides)
     return row
@@ -83,7 +81,7 @@ def test_exact_plotted_values(tmp_path: Path) -> None:
             )
     write_tables(tmp_path, rows)
 
-    table = build_figure(tmp_path, allow_mock=True, repetitions=200)["table"]
+    table = build_figure(tmp_path, repetitions=200)["table"]
 
     at_one = table[table["reported_confidence"] == 1.0].iloc[0]
     at_five = table[table["reported_confidence"] == 5.0].iloc[0]
@@ -119,7 +117,7 @@ def test_only_attacker_rows_are_used(tmp_path: Path) -> None:
     ]
     write_tables(tmp_path, rows)
 
-    table = build_figure(tmp_path, allow_mock=True, repetitions=100)["table"]
+    table = build_figure(tmp_path, repetitions=100)["table"]
 
     assert table["mean_out_degree_share"].tolist() == [0.2, 0.4]
 
@@ -140,7 +138,7 @@ def test_rounds_are_averaged_not_counted_as_examples(tmp_path: Path) -> None:
                 )
     write_tables(tmp_path, rows)
 
-    table = build_figure(tmp_path, allow_mock=True, repetitions=100)
+    table = build_figure(tmp_path, repetitions=100)
 
     row = table["table"].iloc[0]
     assert row["mean_out_degree_share"] == pytest.approx(0.2)  # mean of the rounds
@@ -165,7 +163,7 @@ def test_replications_of_one_example_share_a_cluster(tmp_path: Path) -> None:
                 )
     write_tables(tmp_path, rows)
 
-    row = build_figure(tmp_path, allow_mock=True, repetitions=500)["table"].iloc[0]
+    row = build_figure(tmp_path, repetitions=500)["table"].iloc[0]
 
     assert row["mean_out_degree_share"] == pytest.approx(0.5)
     assert row["n_examples"] == 2
@@ -184,7 +182,7 @@ def test_refuses_a_single_confidence_value(tmp_path: Path) -> None:
     )
 
     with pytest.raises(FigureError, match="two or more distinct reported-confidence"):
-        build_figure(tmp_path, allow_mock=True)
+        build_figure(tmp_path)
 
 
 def test_routing_modes_are_separated_not_pooled(tmp_path: Path) -> None:
@@ -202,7 +200,7 @@ def test_routing_modes_are_separated_not_pooled(tmp_path: Path) -> None:
                 )
     write_tables(tmp_path, rows)
 
-    table = build_figure(tmp_path, allow_mock=True, repetitions=100)["table"]
+    table = build_figure(tmp_path, repetitions=100)["table"]
 
     assert sorted(table["routing_mode"].unique()) == ["enumerated", "sampled"]
     assert len(table) == 4  # two modes x two confidence values, never merged
@@ -224,42 +222,18 @@ def test_verification_modes_are_separate_curves(tmp_path: Path) -> None:
                 )
     write_tables(tmp_path, rows)
 
-    table = build_figure(tmp_path, allow_mock=True, repetitions=100)["table"]
+    table = build_figure(tmp_path, repetitions=100)["table"]
 
     assert sorted(table["verification_mode"].unique()) == ["none", "oracle"]
     # The x-axis stays the *reported* report even when the oracle overrode it.
     assert sorted(table["reported_confidence"].unique()) == [1.0, 5.0]
 
 
-def test_mixed_mock_and_real_is_refused(tmp_path: Path) -> None:
-    rows = [
-        routing_row(example_id="ex-1", reported_confidence=1.0, mock=True),
-        routing_row(example_id="ex-2", reported_confidence=5.0, mock=False),
-    ]
-    write_tables(tmp_path, rows)
-
-    with pytest.raises(FigureError, match="mix mock and real"):
-        build_figure(tmp_path, allow_mock=True)
-
-
-def test_mock_requires_the_flag(tmp_path: Path) -> None:
-    write_tables(
-        tmp_path,
-        [
-            routing_row(example_id="ex-1", reported_confidence=1.0),
-            routing_row(example_id="ex-2", reported_confidence=5.0),
-        ],
-    )
-
-    with pytest.raises(FigureError, match="--allow-mock"):
-        build_figure(tmp_path, allow_mock=False)
-
-
 # ----------------------------------------------------------- end-to-end --
 def collected(tmp_path: Path, builder) -> Path:
     root = tmp_path / "runs"
     builder(root)
-    collect([root], tmp_path / "artifacts", allow_mock=True, quiet=True)
+    collect([root], tmp_path / "artifacts", quiet=True)
     return tmp_path / "artifacts"
 
 
@@ -272,7 +246,7 @@ def full_sweep(root: Path) -> None:
 def test_end_to_end_writes_all_four_artifacts(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, full_sweep)
 
-    result = build_figure(analysis_dir, allow_mock=True, repetitions=200)
+    result = build_figure(analysis_dir, repetitions=200)
 
     for path in (
         result["paths"].table,
@@ -288,19 +262,17 @@ def test_end_to_end_writes_all_four_artifacts(tmp_path: Path) -> None:
 def test_end_to_end_covers_the_whole_rubric(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, full_sweep)
 
-    metadata = build_figure(analysis_dir, allow_mock=True, repetitions=200)["metadata"]
+    metadata = build_figure(analysis_dir, repetitions=200)["metadata"]
 
     assert metadata["reported_confidence_values"] == list(REPORT_VALUES)
     assert metadata["complete_sweep"] is True
     assert metadata["routing_modes"] == ["sampled"]
-    assert metadata["diagnostic_only"] is True
-    assert metadata["mock_status"] == "mock"
 
 
 def test_every_plotted_point_traces_back_to_routing_rows(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, full_sweep)
 
-    table = build_figure(analysis_dir, allow_mock=True, repetitions=200)["table"]
+    table = build_figure(analysis_dir, repetitions=200)["table"]
     routing = pd.read_csv(analysis_dir / "tables" / "routing.csv")
     attackers = routing[routing["is_attacker"]]
 
@@ -318,7 +290,7 @@ def test_csv_is_written_and_routing_table_untouched(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, full_sweep)
     before = (analysis_dir / "tables" / "routing.csv").read_bytes()
 
-    build_figure(analysis_dir, allow_mock=True, repetitions=100)
+    build_figure(analysis_dir, repetitions=100)
 
     assert (analysis_dir / "tables" / f"{SLUG}.csv").is_file()
     assert (analysis_dir / "tables" / "routing.csv").read_bytes() == before
@@ -328,7 +300,7 @@ def test_generic_competitor_is_excluded_with_a_capability_reason(tmp_path: Path)
     analysis_dir = collected(tmp_path, lambda root: make_generic_run(root, "competitor"))
 
     with pytest.raises(FigureError) as excinfo:
-        build_figure(analysis_dir, allow_mock=True)
+        build_figure(analysis_dir)
 
     message = str(excinfo.value)
     assert "no input method logs routing decisions" in message
@@ -341,23 +313,22 @@ def test_clean_only_sweep_is_refused(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, lambda root: make_pear_run(root, "clean"))
 
     with pytest.raises(FigureError, match="is_attacker"):
-        build_figure(analysis_dir, allow_mock=True)
+        build_figure(analysis_dir)
 
 
 def test_cli_reports_failure_without_crashing(tmp_path: Path, capsys) -> None:
     analysis_dir = collected(tmp_path, lambda root: make_pear_run(root, "clean"))
 
-    assert main([str(analysis_dir), "--allow-mock"]) == 1
+    assert main([str(analysis_dir)]) == 1
     assert "Figure 3 not produced" in capsys.readouterr().err
 
 
 def test_cli_writes_metadata_with_the_command(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, full_sweep)
 
-    assert main([str(analysis_dir), "--allow-mock", "--bootstrap-repetitions", "100"]) == 0
+    assert main([str(analysis_dir), "--bootstrap-repetitions", "100"]) == 0
 
     metadata = json.loads((analysis_dir / f"{SLUG}.meta.json").read_text(encoding="utf-8"))
     assert metadata["bootstrap_repetitions"] == 100
-    assert "--allow-mock" in metadata["command"]
     assert metadata["grouping_columns"][0] == "dataset"
     assert "rho" in metadata["quantity"]

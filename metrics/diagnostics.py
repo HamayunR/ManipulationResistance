@@ -212,6 +212,19 @@ def aggregate_diagnostics(rows: Iterable[Mapping[str, Any]]) -> Dict[str, float]
         # could be recovered. Non-zero means the parser is silently falling
         # back, so any metric downstream of it is suspect.
         "parse_failures",
+        # Mean count of outputs that only decoded after their string literals
+        # were repaired -- mathematics in a reasoning field, almost always.
+        # These are recovered rather than lost, but the repaired text is not
+        # byte-for-byte what the model wrote.
+        "json_repairs",
+        # Answer diversity, and the uncertainty diagnostics the DebUnc baseline
+        # records (baselines/debunc). Absent from PEAR rows, which is why the
+        # aggregation skips missing keys rather than defaulting them to zero.
+        "answer_entropy_initial",
+        "answer_entropy_final",
+        "mean_token_entropy",
+        "uncertainty_mean_correct",
+        "uncertainty_mean_incorrect",
     ]
     vals: Dict[str, List[float]] = {key: [] for key in keys}
     for row in rows:

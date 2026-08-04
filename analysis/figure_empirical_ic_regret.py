@@ -25,9 +25,7 @@ be replayed. Concretely:
 * the report is fixed across all applicable rounds rather than optimised per
   round;
 * only five fixed reports are searched, so this is a lower bound on the best
-  deviation;
-* on mock runs the critique-acceptance policy pins the influence update, so
-  rho barely moves and the number is a pipeline check.
+  deviation.
 
 Call it the *empirical best fixed-report utility gain* or *empirical
 end-to-end IC-regret*. Do not call it universal or exact.
@@ -35,7 +33,7 @@ end-to-end IC-regret*. Do not call it universal or exact.
 Usage
 -----
     python analysis/figure_empirical_ic_regret.py \\
-        analysis_artifacts/my_analysis --w-rho 1.0 --w-adoption 1.0 --allow-mock
+        analysis_artifacts/my_analysis --w-rho 1.0 --w-adoption 1.0
 
 The utility weights are required: there is no defensible default, and this
 script does not search over them.
@@ -59,12 +57,9 @@ from analysis.common import RunLoadError  # noqa: E402
 from analysis.figure_utils import (  # noqa: E402
     FigureError,
     add_common_arguments,
-    annotate_mock,
     command_line,
     figure_paths,
-    mock_status_of,
     print_summary,
-    require_separable_mock_status,
     save_figure,
     style_axes,
     title_for,
@@ -108,8 +103,6 @@ OUTPUT_COLUMNS: Tuple[str, ...] = (
     "penalty",
     "analysis_seed",
     "bootstrap_repetitions",
-    "mock",
-    "diagnostic_only",
 )
 
 
@@ -372,7 +365,7 @@ def aggregate(
     return pd.DataFrame(rows), skipped
 
 
-def plot(table: pd.DataFrame, *, mock_status: str, w_rho: float, w_adoption: float):
+def plot(table: pd.DataFrame, *, w_rho: float, w_adoption: float):
     groups = sorted({tuple(r) for r in table[list(GROUP_COLS)].itertuples(index=False)}, key=str)
     fig, axes = plt.subplots(
         1, len(groups), figsize=(5.4 * len(groups), 4.2), squeeze=False, sharey=True
@@ -407,12 +400,11 @@ def plot(table: pd.DataFrame, *, mock_status: str, w_rho: float, w_adoption: flo
     axes[0][0].set_ylabel("Utility gain vs truthful\n(paired, 95% cluster CI)")
     fig.suptitle(
         title_for(
-            f"{FIGURE_NAME}  (w_rho={w_rho}, w_adoption={w_adoption}, penalty=0)", mock_status
+            f"{FIGURE_NAME}  (w_rho={w_rho}, w_adoption={w_adoption}, penalty=0)"
         ),
         fontsize=12,
     )
     fig.tight_layout()
-    annotate_mock(fig, mock_status)
     return fig
 
 
@@ -421,17 +413,12 @@ def build_figure(
     *,
     w_rho: float,
     w_adoption: float,
-    allow_mock: bool = False,
     repetitions: int = DEFAULT_BOOTSTRAP_REPETITIONS,
     analysis_seed: int = DEFAULT_ANALYSIS_SEED,
     command: Optional[str] = None,
 ) -> Dict[str, Any]:
     analysis_dir = Path(analysis_dir)
     results = load_tables(analysis_dir)["results"]
-
-    mock_status = mock_status_of(results)
-    require_separable_mock_status(mock_status, allow_mock=allow_mock, what="Figure 2")
-    diagnostic_only = mock_status != "real"
 
     table, skipped = aggregate(
         results,
@@ -440,13 +427,11 @@ def build_figure(
         repetitions=repetitions,
         analysis_seed=analysis_seed,
     )
-    table["mock"] = mock_status == "mock"
-    table["diagnostic_only"] = diagnostic_only
     table = table[list(OUTPUT_COLUMNS)]
 
     paths = figure_paths(analysis_dir, SLUG)
     table.to_csv(paths.table, index=False)
-    save_figure(plot(table, mock_status=mock_status, w_rho=w_rho, w_adoption=w_adoption), paths)
+    save_figure(plot(table, w_rho=w_rho, w_adoption=w_adoption), paths)
 
     best = table[table["is_best_report"]]
     _, parser_name = canonical_answer_parser(
@@ -475,8 +460,6 @@ def build_figure(
             "cluster_column": "example_id",
             "analysis_seed": analysis_seed,
             "bootstrap_repetitions": repetitions,
-            "mock_status": mock_status,
-            "diagnostic_only": diagnostic_only,
             "best_reports": best[["report_value", "utility_gain", *GROUP_COLS]].to_dict("records"),
             "skipped_groups": skipped,
             "limitations": [
@@ -485,8 +468,6 @@ def build_figure(
                 "the report is fixed across all applicable rounds",
                 "only the five fixed reports are searched, so this is a lower "
                 "bound on the best deviation",
-                "on mock runs the critique-acceptance policy pins the influence "
-                "update, so rho barely moves",
             ],
             "command": command or command_line("figure_empirical_ic_regret.py"),
         },
@@ -519,7 +500,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.analysis_dir,
             w_rho=args.w_rho,
             w_adoption=args.w_adoption,
-            allow_mock=args.allow_mock,
             repetitions=args.bootstrap_repetitions,
             analysis_seed=args.analysis_seed,
             command=command_line("figure_empirical_ic_regret.py", argv),
@@ -529,7 +509,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     print_summary(
-        FIGURE_NAME, result["table"], result["paths"], diagnostic_only=result["metadata"]["diagnostic_only"]
+        FIGURE_NAME, result["table"], result["paths"]
     )
     for row in result["metadata"]["best_reports"]:
         print(f"  best fixed report: value={row['report_value']} gain={row['utility_gain']:+.4f}")

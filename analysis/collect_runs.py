@@ -5,7 +5,6 @@ Usage
     python analysis/collect_runs.py \\
         outputs/exp_a outputs/exp_b \\
         --output analysis_artifacts/my_analysis \\
-        --allow-mock
 
 Writes::
 
@@ -62,7 +61,6 @@ RUNS_COLUMNS: Sequence[str] = (
     "run_id",
     "source_run_dir",
     "schema_version",
-    "mock",
     "adapter",
     "method",
     "model",
@@ -98,7 +96,6 @@ RESULTS_COLUMNS: Sequence[str] = (
     "run_id",
     "source_run_dir",
     "schema_version",
-    "mock",
     "method",
     "model",
     "dataset",
@@ -119,6 +116,7 @@ RESULTS_COLUMNS: Sequence[str] = (
     "prediction",
     "correct",
     "parse_failures",
+    "json_repairs",
     "calls",
     "prompt_tokens",
     "completion_tokens",
@@ -132,7 +130,6 @@ RESULTS_COLUMNS: Sequence[str] = (
 ROUTING_COLUMNS: Sequence[str] = (
     "source_run_dir",
     "run_id",
-    "mock",
     "dataset",
     "dataset_split",
     "model",
@@ -235,7 +232,6 @@ def build_runs_table(runs: Sequence[NormalizedRun]) -> pd.DataFrame:
                     "run_id": run.run_id,
                     "source_run_dir": str(run.run_dir),
                     "schema_version": run.schema_version,
-                    "mock": run.mock,
                     "adapter": run.adapter,
                     "method": meta.method,
                     "model": meta.model or run.model,
@@ -356,7 +352,6 @@ def build_routing_table(runs: Sequence[NormalizedRun]) -> pd.DataFrame:
                     {
                         "source_run_dir": str(run.run_dir),
                         "run_id": run.run_id,
-                        "mock": bool(raw.get("mock")) if raw.get("mock") is not None else run.mock,
                         "dataset": (meta.dataset if meta else None) or run.dataset,
                         "dataset_split": (meta.dataset_split if meta else None) or run.dataset_split,
                         "model": (meta.model if meta else None) or run.model,
@@ -409,7 +404,6 @@ def collect(
     paths: Sequence[str | Path],
     output_dir: str | Path,
     *,
-    allow_mock: bool = False,
     allowed_schema_versions: Optional[Iterable[int]] = None,
     command: Optional[str] = None,
     filters: Optional[Mapping[str, Any]] = None,
@@ -417,7 +411,7 @@ def collect(
 ) -> CollectionResult:
     """Validate, normalise and write the three tables plus the manifest."""
     report = validate_runs(
-        paths, allow_mock=allow_mock, allowed_schema_versions=allowed_schema_versions
+        paths, allowed_schema_versions=allowed_schema_versions
     )
     if not quiet:
         print_report(report)
@@ -457,8 +451,6 @@ def collect(
         "n_runs": len(runs),
         "n_run_conditions": int(len(runs_table)),
         "log_schema_versions": report.schema_versions,
-        "mock_status": report.mock_status,
-        "allow_mock": bool(allow_mock),
         "routing_modes": report.routing_modes,
         "n_results_rows": int(len(results_table)),
         "n_routing_rows": int(len(routing_table)),
@@ -499,7 +491,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument("run_dirs", nargs="+", help="Run directories, or directories containing them.")
     parser.add_argument("--output", required=True, help="Analysis artifact directory to write.")
-    parser.add_argument("--allow-mock", action="store_true", help="Permit mock runs.")
     parser.add_argument(
         "--allow-schema-version", type=int, action="append", default=[], metavar="N"
     )
@@ -512,7 +503,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         collect(
             args.run_dirs,
             args.output,
-            allow_mock=args.allow_mock,
             allowed_schema_versions=allowed,
             command=" ".join(["python analysis/collect_runs.py", *(argv or sys.argv[1:])]),
         )

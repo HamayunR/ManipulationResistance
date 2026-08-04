@@ -19,7 +19,7 @@ set are all this figure needs.
 Usage
 -----
     python analysis/figure_accuracy_vs_adversaries.py \\
-        analysis_artifacts/my_analysis --allow-mock
+        analysis_artifacts/my_analysis
 """
 
 from __future__ import annotations
@@ -41,13 +41,10 @@ from analysis.figure_utils import (  # noqa: E402
     LINESTYLES,
     MARKERS,
     add_common_arguments,
-    annotate_mock,
     command_line,
     constant_columns,
     figure_paths,
-    mock_status_of,
     print_summary,
-    require_separable_mock_status,
     save_figure,
     series_label,
     style_axes,
@@ -86,8 +83,6 @@ OUTPUT_COLUMNS: Tuple[str, ...] = (
     "n_perm_seeds",
     "analysis_seed",
     "bootstrap_repetitions",
-    "mock",
-    "diagnostic_only",
 )
 
 
@@ -167,7 +162,7 @@ def aggregate(
     return result.reset_index(drop=True), excluded
 
 
-def plot(table: pd.DataFrame, *, mock_status: str):
+def plot(table: pd.DataFrame):
     panel_cols = ["dataset", "model"]
     curve_cols = [c for c in CURVE_COLS if c not in panel_cols]
     panels = sorted({tuple(r) for r in table[panel_cols].itertuples(index=False)}, key=str)
@@ -206,16 +201,14 @@ def plot(table: pd.DataFrame, *, mock_status: str):
 
     axes[0][0].set_ylabel("Accuracy (95% cluster bootstrap CI)")
     suffix = "  (" + ", ".join(f"{k}={v}" for k, v in constants.items()) + ")" if constants else ""
-    fig.suptitle(title_for(FIGURE_NAME + suffix, mock_status), fontsize=12)
+    fig.suptitle(title_for(FIGURE_NAME + suffix), fontsize=12)
     fig.tight_layout()
-    annotate_mock(fig, mock_status)
     return fig
 
 
 def build_figure(
     analysis_dir: str | Path,
     *,
-    allow_mock: bool = False,
     repetitions: int = DEFAULT_BOOTSTRAP_REPETITIONS,
     analysis_seed: int = DEFAULT_ANALYSIS_SEED,
     command: Optional[str] = None,
@@ -224,19 +217,13 @@ def build_figure(
     tables = load_tables(analysis_dir)
     results = tables["results"]
 
-    mock_status = mock_status_of(results)
-    require_separable_mock_status(mock_status, allow_mock=allow_mock, what="Figure 1")
-    diagnostic_only = mock_status != "real"
-
     frame = prepare(results)
     table, excluded = aggregate(frame, repetitions=repetitions, analysis_seed=analysis_seed)
-    table["mock"] = mock_status == "mock"
-    table["diagnostic_only"] = diagnostic_only
     table = table[list(OUTPUT_COLUMNS)]
 
     paths = figure_paths(analysis_dir, SLUG)
     table.to_csv(paths.table, index=False)
-    save_figure(plot(table, mock_status=mock_status), paths)
+    save_figure(plot(table), paths)
 
     metadata = write_metadata(
         paths,
@@ -256,8 +243,6 @@ def build_figure(
             "cluster_column": "example_id",
             "analysis_seed": analysis_seed,
             "bootstrap_repetitions": repetitions,
-            "mock_status": mock_status,
-            "diagnostic_only": diagnostic_only,
             "datasets": sorted({str(v) for v in table["dataset"].unique()}),
             "models": sorted({str(v) for v in table["model"].unique()}),
             "methods": sorted({str(v) for v in table["method"].unique()}),
@@ -281,7 +266,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         result = build_figure(
             args.analysis_dir,
-            allow_mock=args.allow_mock,
             repetitions=args.bootstrap_repetitions,
             analysis_seed=args.analysis_seed,
             command=command_line("figure_accuracy_vs_adversaries.py", argv),
@@ -290,7 +274,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Figure 1 not produced: {exc}", file=sys.stderr)
         return 1
     print_summary(
-        FIGURE_NAME, result["table"], result["paths"], diagnostic_only=result["metadata"]["diagnostic_only"]
+        FIGURE_NAME, result["table"], result["paths"]
     )
     for group in result["excluded"]:
         print(f"  excluded: {group}")

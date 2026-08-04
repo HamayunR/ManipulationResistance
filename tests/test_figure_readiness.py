@@ -21,7 +21,7 @@ def build(tmp_path: Path, builder) -> dict:
     """Run a fixture builder, collect the tables, return the readiness payload."""
     root = tmp_path / "runs"
     builder(root)
-    collect([root], tmp_path / "artifacts", allow_mock=True, quiet=True)
+    collect([root], tmp_path / "artifacts", quiet=True)
     return check_readiness(tmp_path / "artifacts")
 
 
@@ -145,13 +145,6 @@ def test_figure2_rejects_multiple_confidence_attackers(tmp_path: Path) -> None:
 
     assert report["ready"] is False
     assert any("exactly one confidence attacker" in arm for arm in report["missing_arms"])
-
-
-def test_figure2_on_mock_data_is_diagnostic_only(tmp_path: Path) -> None:
-    report = figure(build(tmp_path, full_sweep), 2)
-
-    assert report["diagnostic_only"] is True
-    assert any("pins the influence update" in note for note in report["notes"])
 
 
 # ---------------------------------------------------------------- figure 3 --
@@ -301,7 +294,7 @@ def test_figure5_robustness_gap_needs_matched_arms(tmp_path: Path) -> None:
                 routing_temperature=temperature,
                 alpha_influence=alpha,
             )
-    collect([root], tmp_path / "artifacts", allow_mock=True, quiet=True)
+    collect([root], tmp_path / "artifacts", quiet=True)
 
     payload = check_readiness(tmp_path / "artifacts", heatmap_metric="robustness_gap")
     report = figure(payload, 5)
@@ -311,28 +304,6 @@ def test_figure5_robustness_gap_needs_matched_arms(tmp_path: Path) -> None:
 
 
 # ------------------------------------------------------- global behaviour --
-def test_mock_runs_are_marked_diagnostic_only(tmp_path: Path) -> None:
-    payload = build(tmp_path, full_sweep)
-
-    assert payload["mock_status"] == "mock"
-    for number in ("1", "2", "3", "4"):
-        report = payload["figures"][number]
-        if report["ready"]:
-            assert report["diagnostic_only"] is True
-
-
-def test_real_runs_are_not_marked_diagnostic(tmp_path: Path) -> None:
-    def builder(root: Path) -> None:
-        make_pear_run(root, "clean", mock=False, n_agents=4)
-        make_pear_run(root, "attacked", mock=False, n_agents=4, attacker_ids=(4,), attack_value=5)
-
-    payload = build(tmp_path, builder)
-
-    assert payload["mock_status"] == "real"
-    assert figure(payload, 1)["ready"] is True
-    assert figure(payload, 1)["diagnostic_only"] is False
-
-
 def test_mixed_routing_modes_form_separate_groups(tmp_path: Path) -> None:
     def builder(root: Path) -> None:
         for mode in ("sampled", "enumerated"):
@@ -358,7 +329,7 @@ def test_mixed_routing_modes_form_separate_groups(tmp_path: Path) -> None:
 def test_readiness_json_is_written_by_the_cli(tmp_path: Path, capsys) -> None:
     root = tmp_path / "runs"
     full_sweep(root)
-    collect([root], tmp_path / "artifacts", allow_mock=True, quiet=True)
+    collect([root], tmp_path / "artifacts", quiet=True)
 
     assert main([str(tmp_path / "artifacts")]) == 0
 
@@ -367,7 +338,7 @@ def test_readiness_json_is_written_by_the_cli(tmp_path: Path, capsys) -> None:
     assert payload["figures"]["3"]["ready"] is True
     out = capsys.readouterr().out
     assert "Figure 3" in out
-    assert "diagnostic only" in out
+    assert "READY" in out
 
 
 def test_readiness_requires_collected_tables(tmp_path: Path) -> None:

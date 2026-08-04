@@ -2,14 +2,14 @@
 
 Everything here answers one question: *can these runs be pooled into a single
 analysis without changing what a number means?* A file that parses is not
-enough -- pooling a v1 run with a v2 run, a mock run with a real one, or
-sampled routing with enumerated routing all produce a plausible-looking table
-that answers a question nobody asked.
+enough -- pooling a v1 run with a v2 run, or sampled routing with enumerated
+routing, produces a plausible-looking table that answers a question nobody
+asked.
 
 Usage
 -----
     python analysis/validate_runs.py RUN_DIR [RUN_DIR ...]
-    python analysis/validate_runs.py outputs/exp_a outputs/exp_b --allow-mock
+    python analysis/validate_runs.py outputs/exp_a outputs/exp_b
     python analysis/validate_runs.py outputs/ --json report.json
 
 Exit code is 0 only when there are no errors. Warnings never fail the run;
@@ -74,7 +74,6 @@ class RunReport:
     run_id: str
     adapter: Optional[str] = None
     schema_version: Optional[int] = None
-    mock: Optional[bool] = None
     routing_modes: List[str] = field(default_factory=list)
     conditions: List[str] = field(default_factory=list)
     n_results: int = 0
@@ -102,7 +101,6 @@ class ValidationReport:
 
     runs: List[RunReport] = field(default_factory=list)
     issues: List[Issue] = field(default_factory=list)
-    mock_status: str = "unknown"
     schema_versions: List[int] = field(default_factory=list)
     routing_modes: List[str] = field(default_factory=list)
 
@@ -127,7 +125,6 @@ class ValidationReport:
     def as_dict(self) -> Dict[str, Any]:
         return {
             "ok": self.ok,
-            "mock_status": self.mock_status,
             "schema_versions": self.schema_versions,
             "routing_modes": self.routing_modes,
             "n_runs": len(self.runs),
@@ -179,7 +176,6 @@ def validate_run(run_dir: Path, *, allowed_schema_versions: Set[int]) -> RunRepo
     report.run = run
     report.adapter = run.adapter
     report.schema_version = run.schema_version
-    report.mock = run.mock
     report.routing_modes = run.routing_modes
     report.conditions = sorted(run.conditions)
     report.n_results = len(run.results)
@@ -187,7 +183,6 @@ def validate_run(run_dir: Path, *, allowed_schema_versions: Set[int]) -> RunRepo
     report.capabilities = run.capabilities.as_dict()
 
     _check_schema(run, report, allowed_schema_versions)
-    _check_mock_consistency(run, report)
     _check_required_fields(run, report)
     _check_duplicates(run, report)
     _check_routing(run, report, allowed_schema_versions)
@@ -219,41 +214,6 @@ def _check_schema(
                 f"analysis code (supported: {sorted(allowed)}). Field meanings "
                 "differ between versions; opt in with --allow-schema-version "
                 "only after checking the readers.",
-                report.run_id,
-            )
-        )
-
-
-def _check_mock_consistency(run: NormalizedRun, report: RunReport) -> None:
-    add = report.issues.append
-    if run.mock is None:
-        add(
-            Issue(
-                ERROR,
-                "mock_flag_missing",
-                "summary.json has no mock flag, so a canned run cannot be told "
-                "from a real one",
-                report.run_id,
-            )
-        )
-        return
-    row_flags = {bool(r.get("mock")) for r in run.results if r.get("mock") is not None}
-    if len(row_flags) > 1:
-        add(
-            Issue(
-                ERROR,
-                "mock_mixed_within_run",
-                f"results.jsonl mixes mock and real rows: {sorted(row_flags)}",
-                report.run_id,
-            )
-        )
-    elif row_flags and bool(run.mock) not in row_flags:
-        add(
-            Issue(
-                ERROR,
-                "mock_flag_inconsistent",
-                f"summary.json says mock={run.mock} but every result row says "
-                f"mock={sorted(row_flags)[0]}",
                 report.run_id,
             )
         )
@@ -562,10 +522,18 @@ def _check_coverage(run: NormalizedRun, report: RunReport) -> None:
     if not run.routing:
         return
 
+    routed_conditions = {str(row.get("condition")) for row in run.routing}
     expected_routing = set()
     for condition in declared:
         meta = run.conditions.get(condition)
         if meta is None:
+            continue
+        # A condition that logged no routing at all does not route -- a method
+        # with a fixed communication graph has no decision to record (see
+        # baselines/). That is a capability difference, not missing coverage,
+        # and demanding rows from it would make every mixed run invalid. A
+        # condition that logged *some* rows is still held to all of them.
+        if condition not in routed_conditions:
             continue
         rounds = _effective_rounds(meta.mechanism, meta.rounds)
         for e, s, p, r in product(example_ids, seeds, perm_seeds, range(1, rounds + 1)):
@@ -628,7 +596,7 @@ def _report_set_difference(
 
 
 # ------------------------------------------------------------- across runs --
-def _cross_run_checks(report: ValidationReport, *, allow_mock: bool) -> None:
+def _cross_run_checks(report: ValidationReport) -> None:
     add = report.issues.append
     loaded = [r for r in report.runs if r.run is not None]
 
@@ -641,37 +609,6 @@ def _cross_run_checks(report: ValidationReport, *, allow_mock: bool) -> None:
                 "schema_versions_mixed",
                 f"inputs mix log schema versions {versions}. Field meanings "
                 "differ between versions -- analyse them separately.",
-            )
-        )
-
-    flags = {r.mock for r in loaded if r.mock is not None}
-    if flags == {True}:
-        report.mock_status = "mock"
-    elif flags == {False}:
-        report.mock_status = "real"
-    elif len(flags) > 1:
-        report.mock_status = "mixed"
-    else:
-        report.mock_status = "unknown"
-
-    if report.mock_status == "mixed":
-        mock_runs = [r.run_id for r in loaded if r.mock]
-        add(
-            Issue(
-                ERROR,
-                "mock_and_real_mixed",
-                "inputs mix mock and real runs; a mock number pooled with a real "
-                f"one is neither. Mock runs: {mock_runs}",
-            )
-        )
-    elif report.mock_status == "mock" and not allow_mock:
-        add(
-            Issue(
-                ERROR,
-                "mock_not_allowed",
-                "every input is a mock run (canned model outputs). Pass "
-                "--allow-mock to analyse them as a pipeline diagnostic; the "
-                "results are not evidence about any model.",
             )
         )
 
@@ -713,7 +650,6 @@ def _cross_run_checks(report: ValidationReport, *, allow_mock: bool) -> None:
 def validate_runs(
     paths: Sequence[str | Path],
     *,
-    allow_mock: bool = False,
     allowed_schema_versions: Optional[Iterable[int]] = None,
 ) -> ValidationReport:
     """Discover and validate every run under ``paths``."""
@@ -732,14 +668,13 @@ def validate_runs(
         return report
     for run_dir in run_dirs:
         report.runs.append(validate_run(run_dir, allowed_schema_versions=allowed))
-    _cross_run_checks(report, allow_mock=allow_mock)
+    _cross_run_checks(report)
     return report
 
 
 # ------------------------------------------------------------------ printing --
 def print_report(report: ValidationReport) -> None:
     print(f"Validated {len(report.runs)} run director{'y' if len(report.runs) == 1 else 'ies'}")
-    print(f"  mock status     : {report.mock_status}")
     print(f"  schema versions : {report.schema_versions or 'none'}")
     print(f"  routing modes   : {report.routing_modes or 'none logged'}")
     print()
@@ -749,7 +684,7 @@ def print_report(report: ValidationReport) -> None:
         print(f"  {status} {run.run_id}")
         print(
             f"        adapter={run.adapter} schema={run.schema_version} "
-            f"mock={run.mock} conditions={run.conditions}"
+            f"conditions={run.conditions}"
         )
         print(
             f"        results={run.n_results} routing_rows={run.n_routing_rows} "
@@ -773,11 +708,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument("run_dirs", nargs="+", help="Run directories, or directories containing them.")
     parser.add_argument(
-        "--allow-mock",
-        action="store_true",
-        help="Permit analysis of mock runs (canned outputs). Mixed mock/real is still rejected.",
-    )
-    parser.add_argument(
         "--allow-schema-version",
         type=int,
         action="append",
@@ -794,7 +724,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     allowed = set(SUPPORTED_SCHEMA_VERSIONS) | set(args.allow_schema_version)
     try:
         report = validate_runs(
-            args.run_dirs, allow_mock=args.allow_mock, allowed_schema_versions=allowed
+            args.run_dirs, allowed_schema_versions=allowed
         )
     except RunLoadError as exc:
         print(f"validation failed: {exc}", file=sys.stderr)

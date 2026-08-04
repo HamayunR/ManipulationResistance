@@ -59,7 +59,8 @@ SUPPORTED_SCHEMA_VERSIONS: Tuple[int, ...] = (2,)
 
 #: Version of the *normalised* tables written by ``collect_runs.py``. Independent
 #: of the raw log schema: it changes when a normalised column changes meaning.
-ANALYSIS_SCHEMA_VERSION = 1
+#: v2 dropped the ``mock`` column with the mock-backend guard.
+ANALYSIS_SCHEMA_VERSION = 2
 
 #: Routing mechanisms the runner can log. These are different mechanisms, not
 #: presentation variants, so analysis must never pool them.
@@ -74,6 +75,35 @@ ROUTING_MODES: Tuple[str, ...] = (
 
 #: State-aware PEAR routing. Everything else is a baseline or an ablation.
 PEAR_ROUTING_MODES: Tuple[str, ...] = ("sampled", "enumerated")
+
+#: Default method name for a run this harness produced.
+DEFAULT_METHOD = "pear"
+
+#: Methods from other papers, keyed by the ``debate.mode`` prefix that selects
+#: them (see ``baselines/``). These run through this harness and write its log
+#: format, so their *adapter* is ``pear`` -- but they are not PEAR, and a figure
+#: that groups them under one method name is comparing a system with itself.
+#:
+#: ``adapter`` answers "which on-disk format was this read from"; ``method``
+#: answers "which system produced this row". They are different questions and a
+#: run may contain conditions from both, which is why ``method`` is resolved per
+#: condition rather than per run.
+BASELINE_METHOD_PREFIXES: Tuple[str, ...] = ("debunc",)
+
+
+def method_for_mode(mode: Any, *, default: str = DEFAULT_METHOD) -> str:
+    """Which system a condition's ``debate.mode`` belongs to.
+
+    ``debunc`` and ``debunc_prompt`` are both the DebUnc baseline; ``pear_full``,
+    ``cot`` and ``fixed`` are all this harness's own conditions and keep
+    ``default``.
+    """
+    name = str(mode or "").strip()
+    for prefix in BASELINE_METHOD_PREFIXES:
+        if name == prefix or name.startswith(f"{prefix}_"):
+            return prefix
+    return default
+
 
 #: The generic per-example result schema. Every adapter must produce these keys
 #: for every row; optional capability-specific keys are listed in
@@ -91,7 +121,6 @@ RESULT_COLUMNS: Tuple[str, ...] = (
     "prompt_tokens",
     "completion_tokens",
     "total_tokens",
-    "mock",
     "source_run_dir",
 )
 
@@ -109,6 +138,7 @@ OPTIONAL_RESULT_COLUMNS: Tuple[str, ...] = (
     "adversarial_fraction",
     "verification_mode",
     "parse_failures",
+    "json_repairs",
     "calls",
     "n_messages",
     "answer_history",
@@ -472,11 +502,15 @@ def resolve_condition_metadata(
     config: Mapping[str, Any],
     condition_name: str,
     *,
-    method: str = "pear",
+    method: str = DEFAULT_METHOD,
     dataset_fallback: Optional[str] = None,
     split_fallback: Optional[str] = None,
 ) -> ConditionMeta:
     """Effective metadata for one condition of one run.
+
+    ``method`` is the *default*: a condition whose mode names a baseline from
+    another paper overrides it (see :func:`method_for_mode`), because one run
+    can hold both PEAR and baseline conditions and they must not be pooled.
 
     ``attacker_count`` / ``adversarial_fraction`` describe the *confidence*
     attack, the only attack whose agent set is explicit in the config. With no
@@ -525,7 +559,7 @@ def resolve_condition_metadata(
         # than being guessed.
         dataset_split=dataset_cfg.get("split") or split_fallback,
         model=agents_cfg.get("model"),
-        method=method,
+        method=method_for_mode(debate.get("mode"), default=method),
         mechanism=str(debate.get("mode")) if debate.get("mode") else None,
         base_topology=str(debate.get("base_topology")) if debate.get("base_topology") else None,
         n_agents=n_agents,
@@ -581,7 +615,6 @@ class NormalizedRun:
     adapter: str
     method: str
     schema_version: Optional[int]
-    mock: Optional[bool]
     model: Optional[str]
     dataset: Optional[str]
     dataset_split: Optional[str]
@@ -687,7 +720,6 @@ def _common_result_row(
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": total,
-        "mock": run.get("mock"),
         "source_run_dir": str(run.get("run_dir")),
         "run_id": run.get("run_id"),
         "condition": meta.condition,
@@ -701,6 +733,7 @@ def _common_result_row(
         "adversarial_fraction": meta.adversarial_fraction,
         "verification_mode": meta.verification_mode,
         "parse_failures": row.get("parse_failures"),
+        "json_repairs": row.get("json_repairs"),
         "calls": calls,
         "n_messages": row.get("n_messages"),
         "answer_history": row.get("answer_history"),
@@ -718,10 +751,8 @@ def load_pear_run(run_dir: str | os.PathLike) -> NormalizedRun:
     routing = load_routing(run_dir)
 
     schema_version = _opt_int(summary.get("schema_version"))
-    mock = summary.get("mock")
     run_ctx = {
         "schema_version": schema_version,
-        "mock": None if mock is None else bool(mock),
         "run_dir": run_dir,
         "run_id": run_id_for(run_dir),
     }
@@ -731,7 +762,7 @@ def load_pear_run(run_dir: str | os.PathLike) -> NormalizedRun:
         name: resolve_condition_metadata(
             config,
             name,
-            method="pear",
+            method=DEFAULT_METHOD,
             dataset_fallback=summary.get("dataset"),
             split_fallback=summary.get("dataset_split"),
         )
@@ -754,7 +785,7 @@ def load_pear_run(run_dir: str | os.PathLike) -> NormalizedRun:
                 dataset=(config.get("dataset") or {}).get("name"),
                 dataset_split=(config.get("dataset") or {}).get("split"),
                 model=(config.get("agents") or {}).get("model"),
-                method="pear",
+                method=method_for_mode(raw.get("mode")),
                 mechanism=str(raw.get("mode")) if raw.get("mode") else None,
                 base_topology=raw.get("base_topology"),
                 n_agents=_opt_int(raw.get("n_agents")),
@@ -785,7 +816,6 @@ def load_pear_run(run_dir: str | os.PathLike) -> NormalizedRun:
             }
         )
         record["routing_mode"] = modes[0] if len(modes) == 1 else None
-        record["mock"] = bool(raw.get("mock")) if raw.get("mock") is not None else run_ctx["mock"]
         normalized.append(record)
 
     capabilities = Capabilities(
@@ -803,13 +833,21 @@ def load_pear_run(run_dir: str | os.PathLike) -> NormalizedRun:
         ),
     )
 
+    # Run-level method is a fallback for rows whose condition is unknown. A run
+    # holding both PEAR and baseline conditions has no single answer, so it
+    # keeps the adapter's own name and the per-condition value stays
+    # authoritative.
+    condition_methods = {meta.method for meta in conditions.values()}
+    run_method = (
+        condition_methods.pop() if len(condition_methods) == 1 else DEFAULT_METHOD
+    )
+
     return NormalizedRun(
         run_dir=run_dir,
         run_id=run_id_for(run_dir),
         adapter="pear",
-        method="pear",
+        method=run_method,
         schema_version=schema_version,
-        mock=None if mock is None else bool(mock),
         model=summary.get("model") or (config.get("agents") or {}).get("model"),
         dataset=(config.get("dataset") or {}).get("name") or summary.get("dataset"),
         dataset_split=(config.get("dataset") or {}).get("split") or summary.get("dataset_split"),
@@ -829,7 +867,7 @@ def load_generic_run(run_dir: str | os.PathLike) -> NormalizedRun:
     The contract is deliberately small, so wrapping a competitor is a
     half-page of code:
 
-    * ``summary.json`` -- ``schema_version``, ``mock``, ``method`` (or
+    * ``summary.json`` -- ``schema_version``, ``method`` (or
       ``adapter``), ``model``, and optionally ``dataset`` / ``dataset_split``.
     * ``results.jsonl`` -- one object per example x seed, carrying at least
       ``example_id``, ``prediction`` (or ``decision``) and ``correct``. Token
@@ -853,14 +891,12 @@ def load_generic_run(run_dir: str | os.PathLike) -> NormalizedRun:
 
     method = str(summary.get("method") or summary.get("adapter") or "generic")
     schema_version = _opt_int(summary.get("schema_version"))
-    mock = summary.get("mock")
     dataset = summary.get("dataset") or (config.get("dataset") or {}).get("name")
     dataset_split = summary.get("dataset_split") or (config.get("dataset") or {}).get("split")
     model = summary.get("model") or (config.get("agents") or {}).get("model")
 
     run_ctx = {
         "schema_version": schema_version,
-        "mock": None if mock is None else bool(mock),
         "run_dir": run_dir,
         "run_id": run_id_for(run_dir),
     }
@@ -906,8 +942,6 @@ def load_generic_run(run_dir: str | os.PathLike) -> NormalizedRun:
             )
         record = _common_result_row(row=raw, meta=conditions[name], run=run_ctx)
         record["routing_mode"] = raw.get("routing_mode")
-        if raw.get("mock") is not None:
-            record["mock"] = bool(raw.get("mock"))
         normalized.append(record)
 
     capabilities = Capabilities(
@@ -928,7 +962,6 @@ def load_generic_run(run_dir: str | os.PathLike) -> NormalizedRun:
         adapter="generic",
         method=method,
         schema_version=schema_version,
-        mock=None if mock is None else bool(mock),
         model=model,
         dataset=dataset,
         dataset_split=dataset_split,

@@ -44,8 +44,11 @@ PEAR/
 |  `- experiment.py                # high-level experiment loop, condition sweeps, summaries, transcripts
 |- models/
 |  |- base.py                      # BaseLLM and Generation abstractions
-|  |- model.py                     # OpenAI-compatible, Anthropic, HF, and vLLM backend implementations
+|  |- model.py                     # OpenAI-compatible, Anthropic, HF, MLX and vLLM backend implementations
 |  |- factory.py                   # loads configs/models.yaml and instantiates the selected backend
+|  `- whitebox.py                  # optional capability: the model's own token-level scores
+|- baselines/
+|  `- debunc/                      # DebUnc (Yoffe et al. 2024) reimplemented as a comparison baseline
 |- data/
 |  |- loaders.py                   # dataset loading utilities
 |  |- tasks.py                     # dataset adapters: formatting, answer parsing, scoring
@@ -59,6 +62,7 @@ PEAR/
 |  `- stability.py                 # stability / tail-risk / influence-distribution metrics
 |- utils/
 |  |- budget.py                    # optional call/token budget accounting
+|  |- json_output.py               # reading agent JSON, incl. LaTeX-safe string repair
 |  |- logging.py                   # run directory creation, logger setup, timestamp handling
 |  |- seed.py                      # reproducibility helpers
 |  `- tracing.py                   # JSONL trace writing
@@ -224,6 +228,32 @@ replication:
 
 ---
 
+## Baselines from other papers
+
+`baselines/` holds reimplementations of published multi-agent methods, so PEAR
+can be compared against them on the same benchmarks, models and scoring. They
+are selected with `debate.mode` like any other condition and write the same
+result rows, so a config can mix them with PEAR conditions.
+
+| package | paper | modes |
+|---|---|---|
+| [`baselines/debunc`](baselines/debunc/) | DebUnc (Yoffe, Amayuelas & Wang, 2024) | `debunc`, `debunc_prompt` |
+
+DebUnc measures each agent's confidence from its own token probabilities rather
+than asking for it, then states that confidence next to the agent's response in
+the next round's prompt. It needs a whitebox backend (`provider: hf`). Its
+README lists the parts of the paper this port does not implement.
+
+```bash
+python main.py --config configs/debunc.yaml
+```
+
+See [`baselines/README.md`](baselines/README.md) for the contract a baseline
+must satisfy, and each package's `README.md` for its mapping to the paper and
+its list of deviations.
+
+---
+
 ## Datasets
 
 All datasets are loaded from local JSON files under `data/`; the runner does not download data at runtime.
@@ -305,6 +335,15 @@ The primary metric is accuracy. The code also records diagnostics that are usefu
 | `influence_entropy` | concentration or balance of influence |
 | `targeted_cross_rate` | frequency of targeted high-confidence dissent routing |
 | `critique_acceptance_rate` | how often critiques are adopted |
+| `parse_failures` | model outputs no JSON object could be read from |
+| `json_repairs` | outputs that only decoded after their string literals were repaired |
+
+`parse_failures` is worth checking before anything else. A lost payload does not
+abort the round: the runner falls back to scanning the raw text for an answer
+and to a **default confidence of 3**, so an example with many parse failures was
+routed on a constant rather than on what the agents reported. `json_repairs`
+counts the outputs the LaTeX-safe repair in `utils/json_output.py` recovered;
+those are intact, but their text is not byte-for-byte what the model emitted.
 
 Analysis scripts live in `analysis/` and generated figures/reports should be written under `analysis/figures/` or dedicated report subfolders.
 

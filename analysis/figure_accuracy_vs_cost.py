@@ -18,7 +18,7 @@ routing data.
 Usage
 -----
     python analysis/figure_accuracy_vs_cost.py \\
-        analysis_artifacts/my_analysis --allow-mock
+        analysis_artifacts/my_analysis
 """
 
 from __future__ import annotations
@@ -39,12 +39,9 @@ from analysis.figure_utils import (  # noqa: E402
     FigureError,
     MARKERS,
     add_common_arguments,
-    annotate_mock,
     command_line,
     figure_paths,
-    mock_status_of,
     print_summary,
-    require_separable_mock_status,
     save_figure,
     style_axes,
     title_for,
@@ -80,8 +77,6 @@ OUTPUT_COLUMNS: Tuple[str, ...] = (
     "n_runs",
     "analysis_seed",
     "bootstrap_repetitions",
-    "mock",
-    "diagnostic_only",
 )
 
 
@@ -157,7 +152,7 @@ def aggregate(
     return stats.merge(costs, on=list(GROUP_COLS), how="left")
 
 
-def plot(table: pd.DataFrame, *, mock_status: str):
+def plot(table: pd.DataFrame):
     panel_cols = ["dataset", "model"]
     panels = sorted({tuple(r) for r in table[panel_cols].itertuples(index=False)}, key=str)
     fig, axes = plt.subplots(
@@ -192,16 +187,14 @@ def plot(table: pd.DataFrame, *, mock_status: str):
         ax.legend(fontsize=8, frameon=False)
 
     axes[0][0].set_ylabel("Clean accuracy (95% cluster bootstrap CI)")
-    fig.suptitle(title_for(FIGURE_NAME, mock_status), fontsize=12)
+    fig.suptitle(title_for(FIGURE_NAME), fontsize=12)
     fig.tight_layout()
-    annotate_mock(fig, mock_status)
     return fig
 
 
 def build_figure(
     analysis_dir: str | Path,
     *,
-    allow_mock: bool = False,
     repetitions: int = DEFAULT_BOOTSTRAP_REPETITIONS,
     analysis_seed: int = DEFAULT_ANALYSIS_SEED,
     command: Optional[str] = None,
@@ -209,19 +202,13 @@ def build_figure(
     analysis_dir = Path(analysis_dir)
     results = load_tables(analysis_dir)["results"]
 
-    mock_status = mock_status_of(results)
-    require_separable_mock_status(mock_status, allow_mock=allow_mock, what="Figure 4")
-    diagnostic_only = mock_status != "real"
-
     frame, excluded = prepare(results)
     table = aggregate(frame, repetitions=repetitions, analysis_seed=analysis_seed)
-    table["mock"] = mock_status == "mock"
-    table["diagnostic_only"] = diagnostic_only
     table = table[list(OUTPUT_COLUMNS)]
 
     paths = figure_paths(analysis_dir, SLUG)
     table.to_csv(paths.table, index=False)
-    save_figure(plot(table, mock_status=mock_status), paths)
+    save_figure(plot(table), paths)
 
     metadata = write_metadata(
         paths,
@@ -234,8 +221,6 @@ def build_figure(
             "cluster_column": "example_id",
             "analysis_seed": analysis_seed,
             "bootstrap_repetitions": repetitions,
-            "mock_status": mock_status,
-            "diagnostic_only": diagnostic_only,
             "methods_plotted": sorted({str(m) for m in table["method"].unique()}),
             "methods_excluded": excluded,
             "verification_modes": sorted({str(v) for v in table["verification_mode"].unique()}),
@@ -258,7 +243,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         result = build_figure(
             args.analysis_dir,
-            allow_mock=args.allow_mock,
             repetitions=args.bootstrap_repetitions,
             analysis_seed=args.analysis_seed,
             command=command_line("figure_accuracy_vs_cost.py", argv),
@@ -267,7 +251,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Figure 4 not produced: {exc}", file=sys.stderr)
         return 1
     print_summary(
-        FIGURE_NAME, result["table"], result["paths"], diagnostic_only=result["metadata"]["diagnostic_only"]
+        FIGURE_NAME, result["table"], result["paths"]
     )
     for method in result["excluded"]:
         print(f"  excluded: {method['method']} -- {method['reason']}")

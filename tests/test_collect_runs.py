@@ -34,7 +34,6 @@ from tests.analysis_fixtures import (
 @pytest.fixture()
 def artifacts(tmp_path: Path):
     def _collect(paths, **kwargs):
-        kwargs.setdefault("allow_mock", True)
         kwargs.setdefault("quiet", True)
         return collect(paths, tmp_path / "artifacts", **kwargs)
 
@@ -220,7 +219,7 @@ def test_routing_confidence_follows_verification_mode(tmp_path: Path, artifacts)
         verification_mode="oracle",
     )
 
-    routing = collect([root], tmp_path / "art", allow_mock=True, quiet=True).routing
+    routing = collect([root], tmp_path / "art", quiet=True).routing
     attacker = routing[routing["is_attacker"]]
     no_verify = attacker[attacker["verification_mode"] == "none"]
     oracle = attacker[attacker["verification_mode"] == "oracle"]
@@ -271,14 +270,12 @@ def test_manifest_records_provenance(tmp_path: Path) -> None:
     make_pear_run(root, "run")
     out = tmp_path / "artifacts"
 
-    result = collect([root], out, allow_mock=True, quiet=True, command="pytest")
+    result = collect([root], out, quiet=True, command="pytest")
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
 
     assert manifest["n_runs"] == 1
     assert manifest["n_results_rows"] == len(result.results)
     assert manifest["n_routing_rows"] == len(result.routing)
-    assert manifest["mock_status"] == "mock"
-    assert manifest["allow_mock"] is True
     assert manifest["log_schema_versions"] == [2]
     assert manifest["routing_modes"] == ["sampled"]
     assert manifest["analysis_command"] == "pytest"
@@ -294,7 +291,7 @@ def test_tables_are_written_to_disk(tmp_path: Path) -> None:
     make_pear_run(tmp_path / "exp", "run")
     out = tmp_path / "artifacts"
 
-    collect([tmp_path], out, allow_mock=True, quiet=True)
+    collect([tmp_path], out, quiet=True)
 
     for name in ("runs.csv", "results.csv", "routing.csv"):
         path = out / "tables" / name
@@ -308,13 +305,6 @@ def test_collection_refuses_invalid_runs(tmp_path: Path) -> None:
     corrupt_jsonl(run / "results.jsonl", "{bad")
 
     with pytest.raises(RunLoadError, match="validation error"):
-        collect([tmp_path], tmp_path / "artifacts", allow_mock=True, quiet=True)
-
-
-def test_collection_refuses_mock_without_the_flag(tmp_path: Path) -> None:
-    make_pear_run(tmp_path / "exp", "run")
-
-    with pytest.raises(RunLoadError):
         collect([tmp_path], tmp_path / "artifacts", quiet=True)
 
 
@@ -322,7 +312,7 @@ def test_cli_returns_nonzero_on_invalid_input(tmp_path: Path) -> None:
     run = make_pear_run(tmp_path / "exp", "run")
     corrupt_jsonl(run / "routing.jsonl", "{bad")
 
-    code = main([str(tmp_path), "--output", str(tmp_path / "artifacts"), "--allow-mock"])
+    code = main([str(tmp_path), "--output", str(tmp_path / "artifacts")])
 
     assert code == 1
 
@@ -331,5 +321,5 @@ def test_cli_writes_tables(tmp_path: Path) -> None:
     make_pear_run(tmp_path / "exp", "run")
     out = tmp_path / "artifacts"
 
-    assert main([str(tmp_path), "--output", str(out), "--allow-mock"]) == 0
+    assert main([str(tmp_path), "--output", str(out)]) == 0
     assert (out / "tables" / "runs.csv").is_file()

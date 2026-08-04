@@ -1,9 +1,9 @@
-"""Shared plumbing for the figure scripts: outputs, provenance, mock marking.
+"""Shared plumbing for the figure scripts: outputs and provenance.
 
 Every headline figure writes the same four things -- a CSV of exactly the
-plotted values, a PNG, a PDF and a metadata JSON -- and every one of them has
-to make mock data visibly mock. Doing that once here keeps the figure modules
-about their own quantity, and keeps the five of them consistent.
+plotted values, a PNG, a PDF and a metadata JSON. Doing that once here keeps
+the figure modules about their own quantity, and keeps the five of them
+consistent.
 
 Nothing benchmark-, model- or method-specific belongs in this file. Labels are
 built from the data.
@@ -26,9 +26,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from analysis.common import analysis_git_commit  # noqa: E402
-
-#: Appended to the title of anything drawn from canned model outputs.
-MOCK_TITLE_SUFFIX = "  [MOCK DATA - pipeline diagnostic, not a result]"
 
 #: Marker cycle for grouped line plots. Deliberately colour-independent as
 #: well, so a printed or colour-blind-viewed figure still separates the curves.
@@ -73,55 +70,8 @@ def figure_paths(analysis_dir: str | Path, slug: str) -> FigurePaths:
     )
 
 
-def mock_status_of(frame, column: str = "mock") -> str:
-    """``"mock"``, ``"real"``, ``"mixed"`` or ``"unknown"`` for a table."""
-    if column not in getattr(frame, "columns", []) or len(frame) == 0:
-        return "unknown"
-    flags = {bool(v) for v in frame[column].dropna().unique()}
-    if flags == {True}:
-        return "mock"
-    if flags == {False}:
-        return "real"
-    if len(flags) > 1:
-        return "mixed"
-    return "unknown"
-
-
-def require_separable_mock_status(status: str, *, allow_mock: bool, what: str) -> None:
-    """Refuse to draw a figure over an indefensible mixture of inputs."""
-    if status == "mixed":
-        raise FigureError(
-            f"{what}: inputs mix mock and real rows. A curve averaging canned "
-            "outputs with model outputs describes neither; separate them into "
-            "two analysis directories."
-        )
-    if status == "mock" and not allow_mock:
-        raise FigureError(
-            f"{what}: every input row is mock (canned model outputs). Pass "
-            "--allow-mock to produce the figure as a pipeline diagnostic."
-        )
-
-
-def annotate_mock(fig, status: str) -> None:
-    """Stamp a mock figure so a screenshot of it cannot be mistaken for data."""
-    if status != "mock":
-        return
-    fig.text(
-        0.5,
-        0.5,
-        "MOCK",
-        fontsize=90,
-        color="0.85",
-        alpha=0.45,
-        ha="center",
-        va="center",
-        rotation=30,
-        zorder=0,
-    )
-
-
-def title_for(base: str, status: str) -> str:
-    return base + (MOCK_TITLE_SUFFIX if status == "mock" else "")
+def title_for(base: str) -> str:
+    return base
 
 
 def style_axes(ax) -> None:
@@ -183,11 +133,6 @@ def add_common_arguments(parser) -> None:
 
     parser.add_argument("analysis_dir", help="Directory written by analysis/collect_runs.py")
     parser.add_argument(
-        "--allow-mock",
-        action="store_true",
-        help="Draw the figure from mock runs, marked diagnostic_only.",
-    )
-    parser.add_argument(
         "--bootstrap-repetitions",
         type=int,
         default=DEFAULT_BOOTSTRAP_REPETITIONS,
@@ -201,10 +146,8 @@ def add_common_arguments(parser) -> None:
     )
 
 
-def print_summary(name: str, table, paths: FigurePaths, *, diagnostic_only: bool) -> None:
+def print_summary(name: str, table, paths: FigurePaths) -> None:
     print(f"\n{name}: {len(table)} plotted point(s)")
-    if diagnostic_only:
-        print("  diagnostic_only=True -- mock inputs; this shows the pipeline works, nothing else")
     for path in (paths.table, paths.png, paths.pdf, paths.metadata):
         print(f"  wrote {path}")
 

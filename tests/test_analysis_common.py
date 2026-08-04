@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from analysis.common import (
     Capabilities,
@@ -24,6 +25,7 @@ from analysis.common import (
     load_routing,
     load_run_config,
     load_summary,
+    method_for_mode,
     read_jsonl,
     resolve_condition_config,
     resolve_condition_metadata,
@@ -266,6 +268,67 @@ def test_generic_competitor_loads_without_routing(tmp_path: Path) -> None:
     assert all(row["method"] == "single_agent_cot" for row in run.results)
 
 
+def test_a_baseline_condition_is_not_labelled_as_pear(tmp_path: Path) -> None:
+    # A baseline from another paper runs through this harness and writes its log
+    # format, so the *adapter* is pear. The method is not: labelling it pear
+    # would have a figure compare PEAR against itself.
+    run_dir = make_pear_run(
+        tmp_path / "exp",
+        "debunc",
+        mechanism="debunc",
+        condition="debunc_prompt",
+        include_routing=False,
+    )
+
+    run = load_normalized_run(run_dir)
+
+    assert run.adapter == "pear"
+    assert run.method == "debunc"
+    assert all(row["method"] == "debunc" for row in run.results)
+    assert all(row["mechanism"] == "debunc" for row in run.results)
+
+
+def test_a_run_mixing_pear_and_a_baseline_labels_each_condition(tmp_path: Path) -> None:
+    run_dir = make_pear_run(
+        tmp_path / "exp",
+        "mixed",
+        mechanism="pear_full",
+        condition="pear_full",
+        include_routing=False,
+    )
+    # Add a second condition from a baseline, the way a comparison config would.
+    config = yaml.safe_load((run_dir / "config.yaml").read_text())
+    config["conditions"].append({"name": "debunc_prompt", "debate": {"mode": "debunc"}})
+    (run_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+
+    run = load_normalized_run(run_dir)
+
+    assert run.conditions["pear_full"].method == "pear"
+    assert run.conditions["debunc_prompt"].method == "debunc"
+    # No single answer for the run as a whole, so it keeps the adapter's name
+    # and the per-condition value stays authoritative.
+    assert run.method == "pear"
+
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        ("pear_full", "pear"),
+        ("cot", "pear"),
+        ("fixed", "pear"),
+        ("random_k_regular", "pear"),
+        ("debunc", "debunc"),
+        ("debunc_prompt", "debunc"),
+        (None, "pear"),
+        ("", "pear"),
+        # A mode that merely starts with the same letters is not the baseline.
+        ("debuncated", "pear"),
+    ],
+)
+def test_method_for_mode(mode, expected) -> None:
+    assert method_for_mode(mode) == expected
+
+
 def test_missing_routing_is_a_capability_not_a_zero(tmp_path: Path) -> None:
     run_dir = make_generic_run(tmp_path / "exp", "competitor")
 
@@ -322,7 +385,6 @@ def test_provenance_columns_are_present_on_every_row(tmp_path: Path) -> None:
         assert row["source_run_dir"] == str(run_dir)
         assert row["run_id"].endswith("prov")
         assert row["schema_version"] == 2
-        assert row["mock"] is True
         assert row["dataset"] == "gsm8k"
         assert row["model"] == "test-model"
         assert row["condition"] == "pear_full"

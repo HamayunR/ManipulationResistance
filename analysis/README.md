@@ -73,8 +73,7 @@ python analysis/figure_routing_heatmap.py        analysis_artifacts/my_analysis 
     --metric accuracy
 ```
 
-Shared flags: `--bootstrap-repetitions N`, `--analysis-seed N` (and
-`--allow-mock`, see below).
+Shared flags: `--bootstrap-repetitions N`, `--analysis-seed N`.
 Two things are never guessed: Figure 2's utility weights (`--w-rho`,
 `--w-adoption`) and Figure 5's `--metric`.
 
@@ -95,8 +94,8 @@ analysis_artifacts/my_analysis/
 ```
 
 Every figure also writes `figureN_*.meta.json`: the filters, the grouping
-columns, the analysis seed, the bootstrap count, the mock status, and the
-analysis code's git commit. That last one is **the analysis commit, not the
+columns, the analysis seed, the bootstrap count, and the analysis code's git
+commit. That last one is **the analysis commit, not the
 commit that generated the experiments** — the runner does not log its own
 commit, and the metadata says so rather than implying a provenance chain that
 does not exist.
@@ -141,7 +140,7 @@ Write the competitor's output as a run directory:
 ```
 my_competitor_run/
 ├── summary.json     {"schema_version": 2, "adapter": "generic",
-│                     "method": "some_baseline", "model": "...", "mock": false}
+│                     "method": "some_baseline", "model": "..."}
 ├── results.jsonl    one object per example x seed: example_id, prediction (or
 │                    decision), correct, optional prompt_tokens /
 │                    completion_tokens (or a budget block)
@@ -196,18 +195,6 @@ shares, confidences and targeted-cross eligibility straight from
 `routing.jsonl`. It reads the raw logs directly and is deliberately
 mechanism-specific — it is not the common analysis API, and the figure scripts
 do not use it.
-
-## The `mock` flag and `--allow-mock`
-
-Every run records `mock: true|false`, taken from whether its backend declares
-itself a canned one. No canned backend ships with this repository, so runs are
-`mock: false` and `--allow-mock` is a no-op in practice.
-
-The machinery stays because the guarantee is worth keeping: anything flagged
-`mock` is refused unless `--allow-mock` is passed, figures drawn from it are
-marked `diagnostic_only: true` and watermarked, and mixing flagged with
-unflagged runs is rejected outright. If a canned or stub backend is ever added,
-its outputs cannot silently be pooled with real ones.
 
 Note that on small datasets the confidence intervals are still narrow-sample
 artefacts. They describe variation in the table, not scientific uncertainty

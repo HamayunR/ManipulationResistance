@@ -108,6 +108,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "pear_full",
             "random",
             "random_k_regular",
+            # DebUnc baseline (baselines/debunc). Two spellings of one mode:
+            # confidence from token entropy, stated in the next round's prompt.
+            "debunc",
+            "debunc_prompt",
         ],
     )
     parser.add_argument(

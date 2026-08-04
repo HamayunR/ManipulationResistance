@@ -1,0 +1,62 @@
+# DebUnc (Yoffe, Amayuelas and Wang, 2024) as a comparison baseline.
+#
+# Each agent's confidence is measured from the token probabilities of its own
+# response (mean token entropy) and stated next to that response in the next
+# round's prompt.
+#
+# Requires a whitebox backend (provider: hf). DebUnc reads full-vocabulary token
+# distributions, which an API backend does not expose and vLLM does not return.
+#
+# See baselines/debunc/README.md for the mapping to the paper.
+
+agents:
+  model: mistral-7b-instruct-hf
+
+debate:
+  n_agents: 3
+  # Debate rounds *after* the independent first answer, the harness's meaning
+  # throughout. The paper's "3 rounds" is one independent answer plus two
+  # debate turns, so rounds: 2. Runs record debunc_total_rounds: 3.
+  rounds: 2
+  mode: debunc
+  agg_mode: majority_vote
+  max_tokens_per_call: 1024
+  debunc:
+    # Decoding parameters: the paper's temperature of 1, with LM-Polygraph's
+    # defaults for the rest, which is what the reference implementation runs.
+    # They do not affect the uncertainty measurement, which reads the model's
+    # distribution before they are applied.
+    temperature: 1.0
+    top_k: 50
+    top_p: 1.0
+    repetition_penalty: 1.0
+    min_new_tokens: 2
+
+dataset:
+  name: mmlu_pro
+  num_examples: 100
+
+conditions:
+  - name: debunc_prompt
+    debate:
+      mode: debunc
+
+replication:
+  # The paper repeats every configuration five times and reports the mean with
+  # a 95% CI; each decoding seed here is one of those repeats.
+  seeds: [0, 1, 2, 3, 4]
+  # Unused by DebUnc, which has no agent relabelling. One value keeps the run
+  # matrix the same size as a PEAR run's.
+  agent_perm_seeds: [10]
+
+paths:
+  data_dir: data
+  output_dir: outputs
+
+logging:
+  level: INFO
+  console: true
+  jsonl: true
+
+runner:
+  show_progress: true

@@ -27,8 +27,8 @@ experiment harness.
   as one.
 * **Figure-ready analysis saves four artefacts**: a CSV of exactly the plotted
   values, a PNG, a PDF, and a metadata JSON recording filters, grouping
-  columns, analysis seed, bootstrap repetitions, mock status and the analysis
-  code's git commit.
+  columns, analysis seed, bootstrap repetitions and the analysis code's git
+  commit.
 
 ## Confidence provenance
 
@@ -44,10 +44,51 @@ With `verified_confidence_mode: none` the router scores `reported_confidence`
 and both verification columns are null. Reading the wrong one describes a
 mechanism the run never used.
 
-## The `mock` flag
+## Reading model output as JSON
 
-Runs record `mock: true|false` from whether the backend declares itself canned.
-No canned backend ships with this repository, so runs are `mock: false`. The
-flag and `--allow-mock` remain as a guard: if a stub backend is ever added, its
-outputs are refused by default, marked `diagnostic_only` in any figure, and can
-never be pooled with real runs.
+Agents answer in JSON and write mathematics in the string fields, which breaks
+JSON escaping. `utils/json_output.py` owns the recovery; `runner/experiment.py`
+only calls it.
+
+* **A backslash command is not an escape.** `\sigma` and `\(` fail to decode
+  and lose the whole payload -- including `answer` and `confidence`. `\theta`,
+  `\times`, `\frac`, `\rangle` and `\begin` are *worse*: they decode as control
+  characters, so the payload looks fine and the prose is mangled.
+* **A lost payload does not fail loudly.** `_parse_answer_payload` falls back to
+  scanning the raw text for an answer and to a **hard-coded confidence of 3**.
+  A run whose `parse_failures` is high therefore routed on a constant, not on
+  what the model reported. Check `parse_failures` before trusting any
+  confidence-dependent result.
+* **`json_repairs` counts payloads that only decoded after repair**, and each
+  answer event carries `json_repair`. Non-`none` means the decoded text is not
+  byte-for-byte what the model emitted.
+* **Only named LaTeX commands override a valid escape.** `"line one\nStep two"`
+  is a real newline; `\nabla` is not. The list in `utils/json_output.py` is what
+  separates them, and anything not on it keeps its JSON meaning.
+
+## Baselines from other papers
+
+`baselines/<paper>/` holds reimplementations of published methods, dispatched
+from `run_one` by `debate.mode`. See `baselines/README.md` for the contract.
+
+* **`debate.rounds` counts debate rounds *after* the independent first answer**,
+  for every method. A paper that says "3 rounds" meaning one answer plus two
+  debate turns is configured as `rounds: 2`; DebUnc runs also record
+  `debunc_total_rounds` so the two readings cannot be confused.
+* **`method` says which system produced a row; `adapter` says which on-disk
+  format it was read from.** A baseline runs through this harness and writes its
+  log format, so its adapter is `pear` and its method is not. `method` is
+  resolved per condition from `debate.mode`
+  (`analysis/common.py::method_for_mode`), because one run can hold both.
+  Labelling a baseline `pear` makes a figure compare PEAR against itself.
+* **DebUnc confidence is on a 1-10 scale**, derived from token entropy. PEAR's
+  `confidence_history` is a self-reported 1-5. They are different quantities on
+  different scales; pooling them is a validation error.
+* **DebUnc emits no routing rows.** Its graph is a fixed clique with no routing
+  decision, so `routing.jsonl` gets nothing from those conditions. That is the
+  correct outcome, not a missing log.
+* **Baselines never import the top-level `prompts.py`.** Its JSON schema and
+  confidence rubric are part of PEAR's mechanism, not a shared utility.
+* **A baseline implements the cells of its paper that it says it does.** DebUnc
+  here is Confidence-in-Prompt with mean token entropy only; an unknown
+  `debate.debunc` key is an error, so a stale config cannot look honoured.

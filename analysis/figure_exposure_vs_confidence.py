@@ -25,7 +25,7 @@ not the question, so ``verification_mode`` stays a visible curve label.
 Usage
 -----
     python analysis/figure_exposure_vs_confidence.py \\
-        analysis_artifacts/my_analysis --allow-mock
+        analysis_artifacts/my_analysis
 
 Reads ``tables/runs.csv`` and ``tables/routing.csv``; writes
 ``tables/figure3_exposure_vs_confidence.csv``, PNG, PDF and a metadata JSON.
@@ -51,14 +51,11 @@ from analysis.figure_utils import (  # noqa: E402
     LINESTYLES,
     MARKERS,
     add_common_arguments,
-    annotate_mock,
     bool_series,
     command_line,
     constant_columns,
     figure_paths,
-    mock_status_of,
     print_summary,
-    require_separable_mock_status,
     save_figure,
     series_label,
     style_axes,
@@ -125,8 +122,6 @@ OUTPUT_COLUMNS: Tuple[str, ...] = (
     "n_perm_seeds",
     "analysis_seed",
     "bootstrap_repetitions",
-    "mock",
-    "diagnostic_only",
 )
 
 
@@ -259,7 +254,7 @@ def aggregate(
     return result.reset_index(drop=True), excluded
 
 
-def plot(table: pd.DataFrame, *, mock_status: str):
+def plot(table: pd.DataFrame):
     """One panel per dataset/model/mechanism; one curve per verification x routing."""
     panel_cols = ["dataset", "model", "mechanism"]
     curve_cols = ["verification_mode", "routing_mode"]
@@ -305,16 +300,14 @@ def plot(table: pd.DataFrame, *, mock_status: str):
     suffix = (
         "  (" + ", ".join(f"{k}={v}" for k, v in constants.items()) + ")" if constants else ""
     )
-    fig.suptitle(title_for(FIGURE_NAME + suffix, mock_status), fontsize=12)
+    fig.suptitle(title_for(FIGURE_NAME + suffix), fontsize=12)
     fig.tight_layout()
-    annotate_mock(fig, mock_status)
     return fig
 
 
 def build_figure(
     analysis_dir: str | Path,
     *,
-    allow_mock: bool = False,
     repetitions: int = DEFAULT_BOOTSTRAP_REPETITIONS,
     analysis_seed: int = DEFAULT_ANALYSIS_SEED,
     command: Optional[str] = None,
@@ -339,21 +332,15 @@ def build_figure(
             "eligible for the accuracy and cost figures."
         )
 
-    mock_status = mock_status_of(routing)
-    require_separable_mock_status(mock_status, allow_mock=allow_mock, what="Figure 3")
-    diagnostic_only = mock_status != "real"
-
     attackers = select_attacker_rows(routing)
     table, excluded = aggregate(
         attackers, repetitions=repetitions, analysis_seed=analysis_seed
     )
-    table["mock"] = mock_status == "mock"
-    table["diagnostic_only"] = diagnostic_only
     table = table[list(OUTPUT_COLUMNS)]
 
     paths = figure_paths(analysis_dir, SLUG)
     table.to_csv(paths.table, index=False)
-    save_figure(plot(table, mock_status=mock_status), paths)
+    save_figure(plot(table), paths)
 
     values_present = sorted({int(v) for v in table["reported_confidence"].unique()})
     metadata = write_metadata(
@@ -385,8 +372,6 @@ def build_figure(
             "analysis_seed": analysis_seed,
             "bootstrap_repetitions": repetitions,
             "cluster_column": "example_id",
-            "mock_status": mock_status,
-            "diagnostic_only": diagnostic_only,
             "routing_modes": sorted({str(v) for v in table["routing_mode"].unique()}),
             "datasets": sorted({str(v) for v in table["dataset"].unique()}),
             "models": sorted({str(v) for v in table["model"].unique()}),
@@ -412,7 +397,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         result = build_figure(
             args.analysis_dir,
-            allow_mock=args.allow_mock,
             repetitions=args.bootstrap_repetitions,
             analysis_seed=args.analysis_seed,
             command=command_line("figure_exposure_vs_confidence.py", argv),
@@ -424,8 +408,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print_summary(
         FIGURE_NAME,
         result["table"],
-        result["paths"],
-        diagnostic_only=result["metadata"]["diagnostic_only"],
+        result["paths"]
     )
     for group in result["excluded"]:
         print(f"  excluded: {group}")

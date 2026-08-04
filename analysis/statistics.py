@@ -6,16 +6,15 @@ A single benchmark example is replicated across decoding seeds, agent
 permutation seeds and debate rounds. Those replications are not independent
 observations of "how often is this system right" -- they are repeated looks at
 the same question. Treating them as independent shrinks every interval by
-roughly the square root of the replication count, which is how a mock sweep of
+roughly the square root of the replication count, which is how a sweep of
 three questions ends up with error bars that look like a study of sixty.
 
 So resampling is over *clusters* (``example_id`` by default), and every row
 belonging to a resampled example travels with it.
 
-The intervals are engineering artefacts on small or mock datasets: they
-describe the variability of the numbers in the table, not scientific
-uncertainty about any model. Figure scripts label mock output
-``diagnostic_only`` for exactly that reason.
+The intervals are engineering artefacts on small datasets: they describe the
+variability of the numbers in the table, not scientific uncertainty about any
+model.
 """
 
 from __future__ import annotations

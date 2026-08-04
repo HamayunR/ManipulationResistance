@@ -10,15 +10,13 @@ them and prints the same thing in prose.
 The report exists so that "the figure is missing" is answered with an
 experiment to run rather than a guess. For every planned figure it names the
 arms that are absent, the capabilities no input method provides, and whether
-what *is* present is a real result or a mock pipeline diagnostic.
+what *is* present can support the claim a figure would make.
 
 Two rules run through all of it:
 
 * a missing capability is a property of the method, not a zero. A competitor
   with no routing log is excluded from routing figures and stays fully
   eligible for accuracy and cost;
-* mock runs can prove the pipeline works and nothing else, so anything drawn
-  from them is ``diagnostic_only``.
 """
 
 from __future__ import annotations
@@ -65,14 +63,12 @@ class FigureReadiness:
     figure: int
     name: str
     ready: bool
-    diagnostic_only: bool
     reason: str
     required_groups: List[str] = field(default_factory=list)
     available_groups: List[Dict[str, Any]] = field(default_factory=list)
     missing_arms: List[str] = field(default_factory=list)
     missing_capabilities: List[str] = field(default_factory=list)
     routing_modes: List[str] = field(default_factory=list)
-    mock_status: str = "unknown"
     notes: List[str] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -80,19 +76,6 @@ class FigureReadiness:
 
 
 # ------------------------------------------------------------------ helpers --
-def _mock_status(runs: pd.DataFrame) -> str:
-    if "mock" not in runs or runs.empty:
-        return "unknown"
-    flags = {bool(v) for v in runs["mock"].dropna().unique()}
-    if flags == {True}:
-        return "mock"
-    if flags == {False}:
-        return "real"
-    if len(flags) > 1:
-        return "mixed"
-    return "unknown"
-
-
 def _labelled(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
     """Copy with grouping columns filled, so a null key is a visible group."""
     out = frame.copy()
@@ -118,19 +101,13 @@ def _verdict(
     *,
     ready: bool,
     reason: str,
-    mock_status: str,
     **kwargs: Any,
 ) -> FigureReadiness:
-    # Mock data can demonstrate that a figure script runs; it cannot support a
-    # claim about a model, so anything drawn from it is diagnostic only.
-    diagnostic_only = bool(ready and mock_status != "real")
     return FigureReadiness(
         figure=figure,
         name=FIGURE_NAMES[figure],
         ready=ready,
-        diagnostic_only=diagnostic_only,
         reason=reason,
-        mock_status=mock_status,
         **kwargs,
     )
 
@@ -148,7 +125,6 @@ def _capability_methods(runs: pd.DataFrame, capability: str) -> Tuple[List[str],
 # --------------------------------------------------------------- figure 1 --
 def check_figure1(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFrame) -> FigureReadiness:
     """Accuracy vs adversarial fraction."""
-    mock_status = _mock_status(runs)
     group_cols = [*BASE_GROUP_COLS, "attack_type", "routing_mode"]
     required = [
         "accuracy (correct) on every arm",
@@ -162,7 +138,6 @@ def check_figure1(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
             1,
             ready=False,
             reason="no input run reports per-example correctness",
-            mock_status=mock_status,
             required_groups=required,
             missing_capabilities=["has_accuracy"],
         )
@@ -176,7 +151,6 @@ def check_figure1(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
                 "no rows carry both accuracy and an adversarial fraction; the "
                 "attacked-arm metadata is what identifies the x-axis"
             ),
-            mock_status=mock_status,
             required_groups=required,
             missing_capabilities=["supports_adversarial_fraction"],
         )
@@ -214,7 +188,6 @@ def check_figure1(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
         1,
         ready=ready,
         reason=reason,
-        mock_status=mock_status,
         required_groups=required,
         available_groups=available,
         missing_arms=missing,
@@ -244,7 +217,6 @@ def _fixed_report_arms(subset: pd.DataFrame) -> Dict[str, pd.DataFrame]:
 
 def check_figure2(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFrame) -> FigureReadiness:
     """Empirical best fixed-report utility gain (paired truthful vs report v)."""
-    mock_status = _mock_status(runs)
     group_cols = [*BASE_GROUP_COLS, "routing_mode"]
     required = [
         "one truthful arm with confidence_inflation disabled",
@@ -272,7 +244,6 @@ def check_figure2(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
                 f"initial answer from answer_history and the group decision; "
                 f"missing: {missing_capabilities}"
             ),
-            mock_status=mock_status,
             required_groups=required,
             missing_capabilities=missing_capabilities,
         )
@@ -335,12 +306,6 @@ def check_figure2(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
             available.append(entry)
 
     ready = bool(available)
-    if mock_status != "real":
-        notes.append(
-            "mock runs: the mock critique-acceptance policy pins the influence "
-            "update, so rho barely moves and the utility gain is a pipeline "
-            "check, not a measurement"
-        )
     reason = (
         f"{len(available)} group(s) carry a truthful arm and fixed reports 1-5"
         if ready
@@ -350,7 +315,6 @@ def check_figure2(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
         2,
         ready=ready,
         reason=reason,
-        mock_status=mock_status,
         required_groups=required,
         available_groups=available,
         missing_arms=missing,
@@ -362,7 +326,6 @@ def check_figure2(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
 # --------------------------------------------------------------- figure 3 --
 def check_figure3(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFrame) -> FigureReadiness:
     """Adversary routing-exposure share vs reported confidence."""
-    mock_status = _mock_status(runs)
     group_cols = [*BASE_GROUP_COLS, "routing_mode"]
     required = [
         "routing rows (has_routing)",
@@ -386,7 +349,6 @@ def check_figure3(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
             3,
             ready=False,
             reason="no input run logs routing decisions",
-            mock_status=mock_status,
             required_groups=required,
             missing_capabilities=["has_routing"],
             notes=notes,
@@ -402,7 +364,6 @@ def check_figure3(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
                 "plots the adversary's exposure, so a clean-only sweep cannot "
                 "produce it"
             ),
-            mock_status=mock_status,
             required_groups=required,
             missing_arms=["at least one confidence-attacker arm"],
             routing_modes=_routing_modes(routing),
@@ -417,7 +378,6 @@ def check_figure3(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
             3,
             ready=False,
             reason="attacker rows carry no reported_confidence / out_degree_share",
-            mock_status=mock_status,
             required_groups=required,
             missing_capabilities=["has_confidence_reports"],
             notes=notes,
@@ -456,7 +416,6 @@ def check_figure3(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
         3,
         ready=ready,
         reason=reason,
-        mock_status=mock_status,
         required_groups=required,
         available_groups=available,
         missing_arms=missing,
@@ -468,7 +427,6 @@ def check_figure3(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
 # --------------------------------------------------------------- figure 4 --
 def check_figure4(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFrame) -> FigureReadiness:
     """Clean accuracy vs token cost."""
-    mock_status = _mock_status(runs)
     group_cols = ["dataset", "model"]
     required = [
         "clean conditions (attacker_count == 0)",
@@ -483,7 +441,6 @@ def check_figure4(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
             4,
             ready=False,
             reason="no clean (attacker_count == 0) condition in the inputs",
-            mock_status=mock_status,
             required_groups=required,
             missing_arms=["a clean arm"],
         )
@@ -525,7 +482,6 @@ def check_figure4(runs: pd.DataFrame, results: pd.DataFrame, routing: pd.DataFra
             if ready
             else "no clean condition reports token usage"
         ),
-        mock_status=mock_status,
         required_groups=required,
         available_groups=available,
         missing_arms=[f"token usage for method {m}" for m in excluded],
@@ -546,7 +502,6 @@ def check_figure5(
     metric: str = "accuracy",
 ) -> FigureReadiness:
     """Routing temperature x influence-weight heatmap."""
-    mock_status = _mock_status(runs)
     group_cols = [*BASE_GROUP_COLS, "routing_mode"]
     required = [
         "routing_temperature and alpha_influence on the condition metadata",
@@ -560,7 +515,6 @@ def check_figure5(
             5,
             ready=False,
             reason="no run records routing_temperature",
-            mock_status=mock_status,
             required_groups=required,
             missing_capabilities=["routing_temperature"],
         )
@@ -569,7 +523,6 @@ def check_figure5(
             5,
             ready=False,
             reason="no run records alpha_influence",
-            mock_status=mock_status,
             required_groups=required,
             missing_capabilities=["alpha_influence"],
         )
@@ -628,7 +581,6 @@ def check_figure5(
             if ready
             else "no group forms a complete 2 x 2 (or larger) parameter grid"
         ),
-        mock_status=mock_status,
         required_groups=required,
         available_groups=available,
         missing_arms=missing,
@@ -673,7 +625,6 @@ def check_readiness(
         "analysis_dir": str(analysis_dir),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "analysis_git_commit": analysis_git_commit(),
-        "mock_status": _mock_status(runs),
         "n_runs": int(runs["run_id"].nunique()) if "run_id" in runs else 0,
         "n_run_conditions": int(len(runs)),
         "n_results_rows": int(len(results)),
@@ -689,18 +640,13 @@ def check_readiness(
 
 def print_readiness(payload: Mapping[str, Any]) -> None:
     print(f"Figure readiness for {payload['analysis_dir']}")
-    print(
-        f"  mock status: {payload['mock_status']}   runs: {payload['n_runs']}   "
-        f"methods: {payload['methods']}"
-    )
+    print(f"  runs: {payload['n_runs']}   methods: {payload['methods']}")
     print(
         f"  rows: results={payload['n_results_rows']} routing={payload['n_routing_rows']}   "
         f"routing modes: {payload['routing_modes'] or 'none'}"
     )
     for number, report in sorted(payload["figures"].items()):
         status = "READY" if report["ready"] else "NOT READY"
-        if report["ready"] and report["diagnostic_only"]:
-            status = "READY (diagnostic only)"
         print(f"\n  Figure {number}: {report['name']}")
         print(f"    {status} -- {report['reason']}")
         if report["missing_capabilities"]:

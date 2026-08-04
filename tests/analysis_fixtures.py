@@ -1,6 +1,6 @@
 """Synthetic run directories for the analysis-layer tests.
 
-Real runs are slow, mock-provider-bound and only cover the scenarios that
+Real runs are slow, model-bound and only cover the scenarios that
 happen to have been run. The analysis layer instead needs runs that are
 deliberately *wrong* -- mixed schema versions, duplicate rows, incomplete
 confidence maps, a competitor with no routing at all -- so the fixtures build
@@ -60,7 +60,6 @@ def make_pear_run(
     dataset: str = "gsm8k",
     dataset_split: Optional[str] = None,
     model: str = "test-model",
-    mock: bool = True,
     schema_version: int = 2,
     mechanism: str = "pear_full",
     base_topology: str = "k_regular",
@@ -243,7 +242,6 @@ def make_pear_run(
                             "example_id": example,
                             "seed": seed,
                             "perm_seed": perm_seed,
-                            "mock": mock,
                             "mode": effective_mechanism,
                             "base_topology": base_topology,
                             "n_agents": effective_agents,
@@ -306,7 +304,6 @@ def make_pear_run(
                     "confidence_history": confidence_history,
                     "influence_history": influence_history,
                     "condition": condition,
-                    "mock": mock,
                     "mode": effective_mechanism,
                     "topology": base_topology,
                     "base_topology": base_topology,
@@ -336,7 +333,6 @@ def make_pear_run(
         {
             "schema_version": schema_version,
             "run_dir": str(run_dir),
-            "mock": mock,
             "model": model,
             "judge_model": None,
             "parallel_examples": 1,
@@ -346,7 +342,6 @@ def make_pear_run(
                     "accuracy": accuracy_value,
                     "n_runs": len(results),
                     "n_examples": len(examples),
-                    "mock": mock,
                     "mode": effective_mechanism,
                     "base_topology": base_topology,
                     "n_agents": effective_agents,
@@ -366,7 +361,6 @@ def make_generic_run(
     dataset: str = "gsm8k",
     dataset_split: Optional[str] = None,
     model: str = "test-model",
-    mock: bool = True,
     schema_version: int = 2,
     examples: Sequence[str] = DEFAULT_EXAMPLES,
     seeds: Sequence[int] = (0,),
@@ -401,7 +395,6 @@ def make_generic_run(
                 "seed": seed,
                 "perm_seed": None,
                 "condition": condition,
-                "mock": mock,
                 "mechanism": method,
                 "n_agents": n_agents,
                 "attacker_count": 0,
@@ -434,7 +427,6 @@ def make_generic_run(
             "adapter": "generic",
             "method": method,
             "model": model,
-            "mock": mock,
             "dataset": dataset,
             "dataset_split": dataset_split,
             "accuracy": len(correct_examples) / len(examples) if examples else 0.0,

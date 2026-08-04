@@ -23,9 +23,10 @@ Conventions shared by every backend
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from models.base import BaseLLM, Generation
+from models.whitebox import WhiteboxGeneration, WhiteboxLLM
 from utils.logging import get_logger
 
 _log = get_logger("models.model")
@@ -223,12 +224,17 @@ class AnthropicLLM(BaseLLM):
 
 
 # Open-source backends
-class HFLLM(BaseLLM):
+class HFLLM(WhiteboxLLM):
     """Hugging Face Transformers causal-LM backend.
 
     Loads the tokenizer and model once at construction; subsequent
     ``generate`` calls reuse the same pipeline. The backend reads ``HF_TOKEN``
     from the environment for gated checkpoints.
+
+    This is the only backend in the harness that satisfies
+    :class:`models.whitebox.WhiteboxLLM`: it can report the model's own
+    per-token distribution. Methods that need that (DebUnc, see
+    ``baselines/debunc``) therefore require ``provider: hf``.
 
     Parameters
     ----------
@@ -339,6 +345,7 @@ class HFLLM(BaseLLM):
         self._temperature = temperature
         self._max_new_tokens = max_new_tokens
         self._extra = gen_kwargs
+        self._warned_about_processed_logits = False
 
     def generate(
         self,
@@ -387,6 +394,186 @@ class HFLLM(BaseLLM):
             completion_tokens=completion_tokens,
             raw=out,
         )
+
+    # ------------------------------------------------------------ whitebox --
+    @property
+    def tokenizer(self) -> Any:
+        return self._tokenizer
+
+    def _stop_token_ids(self) -> set[int]:
+        """Every token id that ends a generation for this checkpoint."""
+        ids: set[int] = set()
+        eos = getattr(self._tokenizer, "eos_token_id", None)
+        declared = getattr(getattr(self._model_obj, "generation_config", None), "eos_token_id", None)
+        for value in (eos, declared):
+            if isinstance(value, int):
+                ids.add(value)
+            elif isinstance(value, (list, tuple)):
+                ids.update(int(item) for item in value)
+        return ids
+
+    def chat_generate(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        max_tokens: int,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
+        min_new_tokens: int = 0,
+        seed: Optional[int] = None,
+    ) -> WhiteboxGeneration:
+        """Continue ``messages``, reporting the model's own per-token scores."""
+        import torch
+        from transformers import LogitsProcessorList  # type: ignore
+
+        try:
+            prompt_ids = self._tokenizer.apply_chat_template(
+                [dict(m) for m in messages], tokenize=True, add_generation_prompt=True
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "the whitebox path needs a chat template; this checkpoint's "
+                "tokenizer does not define one"
+            ) from exc
+        if hasattr(prompt_ids, "keys"):  # transformers 5 returns a BatchEncoding
+            prompt_ids = prompt_ids["input_ids"]
+
+        device = self._model_obj.device
+        input_ids = torch.tensor([list(prompt_ids)], dtype=torch.long, device=device)
+        attention_mask = torch.ones_like(input_ids)
+
+        pad_token_id = self._tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self._tokenizer.eos_token_id
+
+        collector = _TokenScoreCollector()
+        gen_kwargs: Dict[str, Any] = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "max_new_tokens": int(max_tokens),
+            "do_sample": temperature > 0,
+            "logits_processor": LogitsProcessorList([collector]),
+            "return_dict_in_generate": True,
+            "pad_token_id": pad_token_id,
+        }
+        if min_new_tokens:
+            gen_kwargs["min_new_tokens"] = int(min_new_tokens)
+        if temperature > 0:
+            gen_kwargs["temperature"] = float(temperature)
+            if top_k is not None:
+                gen_kwargs["top_k"] = int(top_k)
+            if top_p is not None:
+                gen_kwargs["top_p"] = float(top_p)
+        if repetition_penalty is not None:
+            gen_kwargs["repetition_penalty"] = float(repetition_penalty)
+
+        if seed is not None:
+            torch.manual_seed(int(seed))
+
+        with torch.no_grad():
+            out = self._model_obj.generate(**gen_kwargs)
+
+        prompt_len = input_ids.shape[1]
+        generated = out.sequences[0, prompt_len:].tolist()
+        # Everything after the first end-of-sequence token is padding the
+        # sampler never chose. The EOS token itself stays in the score sequence
+        # (the model did decide to stop) but is kept out of the decoded text.
+        # Checkpoints can declare more than one stop token -- Llama 3 has both
+        # <|end_of_text|> and <|eot_id|> -- and stopping on one the tokenizer
+        # does not name as *the* EOS would otherwise leave it in the text.
+        stop_ids = self._stop_token_ids()
+        text_len = len(generated)
+        for index, token in enumerate(generated):
+            if token in stop_ids:
+                generated = generated[: index + 1]
+                text_len = index
+                break
+
+        logprobs, entropies = collector.finalise(generated)
+        text = self._tokenizer.decode(generated[:text_len])
+        if collector.top_k_suspected and not self._warned_about_processed_logits:
+            self._warned_about_processed_logits = True
+            _log.warning(
+                "Per-token scores look already filtered by sampling parameters "
+                "(only %d finite entries in a %d-token vocabulary). Uncertainty "
+                "metrics assume the raw distribution; check that this "
+                "transformers version still applies custom logits processors "
+                "before the sampling warpers.",
+                collector.finite_first_step,
+                collector.vocab_size,
+            )
+
+        return WhiteboxGeneration(
+            text=text,
+            prompt_tokens=prompt_len,
+            completion_tokens=len(generated),
+            raw=None,
+            token_ids=generated,
+            token_logprobs=logprobs,
+            token_entropies=entropies,
+            logits_are_unprocessed=not collector.top_k_suspected,
+        )
+
+
+class _TokenScoreCollector:
+    """Records full-vocabulary entropy and chosen-token log-probability per step.
+
+    Implemented as a logits processor rather than by asking ``generate`` for
+    ``output_logits=True``, for two reasons:
+
+    * memory -- a 150k-token vocabulary over 1k generated tokens is ~600 MB of
+      retained logits per call, and this only needs two scalars per step; and
+    * fidelity -- transformers merges caller-supplied processors into the chain
+      *before* it appends the sampling warpers, so the scores seen here are the
+      model's own distribution rather than one already narrowed by temperature,
+      top-k or top-p. This mirrors LM-Polygraph's ``_ScoresProcessor``, which
+      is what the DebUnc reference implementation measures.
+
+    The log-probability of a chosen token is only knowable one step late (the
+    sampler picks it after this processor runs), so each call records the token
+    the *previous* step settled on and :meth:`finalise` closes out the last one.
+
+    It duck-types transformers' ``LogitsProcessor`` rather than subclassing it,
+    so that this module keeps importing transformers lazily.
+    """
+
+    def __init__(self) -> None:
+        self.entropies: List[float] = []
+        self.logprobs: List[float] = []
+        self.vocab_size = 0
+        self.finite_first_step = 0
+        self._previous_row = None
+
+    @property
+    def top_k_suspected(self) -> bool:
+        """Whether the first step's distribution looked pre-filtered."""
+        return bool(self.vocab_size) and self.finite_first_step < self.vocab_size // 2
+
+    def __call__(self, input_ids, scores):
+        import torch
+
+        if self._previous_row is not None:
+            chosen = int(input_ids[0, -1])
+            self.logprobs.append(float(self._previous_row[chosen]))
+
+        row = torch.log_softmax(scores[0].float(), dim=-1)
+        finite = torch.isfinite(row)
+        probs = row[finite].exp()
+        self.entropies.append(float(-(probs * row[finite]).sum()))
+        if not self.vocab_size:
+            self.vocab_size = int(row.numel())
+            self.finite_first_step = int(finite.sum())
+        self._previous_row = row
+        return scores
+
+    def finalise(self, generated_ids: Sequence[int]) -> tuple[List[float], List[float]]:
+        """Return ``(logprobs, entropies)`` truncated to ``generated_ids``."""
+        if self._previous_row is not None and len(self.logprobs) < len(generated_ids):
+            self.logprobs.append(float(self._previous_row[generated_ids[len(self.logprobs)]]))
+        n = len(generated_ids)
+        return self.logprobs[:n], self.entropies[:n]
 
 
 class MLXLLM(BaseLLM):
@@ -688,4 +875,4 @@ class VLLMLLM(BaseLLM):
         return [self._generation_from_output(out) for out in outputs]
 
 
-__all__ = ["AnthropicLLM", "HFLLM", "OpenAILLM", "VLLMLLM"]
+__all__ = ["AnthropicLLM", "HFLLM", "MLXLLM", "OpenAILLM", "VLLMLLM"]

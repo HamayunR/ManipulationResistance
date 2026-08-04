@@ -4,8 +4,7 @@ Usage
 -----
     python analysis/run_headline_analysis.py \\
         outputs/experiment_root \\
-        --output analysis_artifacts/pilot \\
-        --allow-mock
+        --output analysis_artifacts/pilot
 
     python analysis/run_headline_analysis.py outputs/ --output art \\
         --figures 1 3 4 --strict
@@ -69,7 +68,6 @@ def _builders(options: Dict[str, Any]) -> Dict[int, Callable[[Path], Dict[str, A
     the driver knows nothing about what any of them plots.
     """
     common = {
-        "allow_mock": options["allow_mock"],
         "repetitions": options["repetitions"],
         "analysis_seed": options["analysis_seed"],
     }
@@ -108,7 +106,6 @@ def run(
     output_dir: str | Path,
     *,
     figures: Sequence[int] = ALL_FIGURES,
-    allow_mock: bool = False,
     strict: bool = False,
     repetitions: int = DEFAULT_BOOTSTRAP_REPETITIONS,
     analysis_seed: int = DEFAULT_ANALYSIS_SEED,
@@ -135,7 +132,6 @@ def run(
     collection = collect(
         paths,
         output_dir,
-        allow_mock=allow_mock,
         allowed_schema_versions=allowed_schema_versions or SUPPORTED_SCHEMA_VERSIONS,
         command=" ".join(["python analysis/run_headline_analysis.py", *sys.argv[1:]]),
         quiet=quiet,
@@ -151,7 +147,6 @@ def run(
 
     builders = _builders(
         {
-            "allow_mock": allow_mock,
             "repetitions": repetitions,
             "analysis_seed": analysis_seed,
             "w_rho": w_rho,
@@ -172,7 +167,6 @@ def run(
             {
                 "figure": number,
                 "name": FIGURE_NAMES[number],
-                "diagnostic_only": bool(result["metadata"].get("diagnostic_only")),
                 "n_rows": int(len(result["table"])),
                 "outputs": result["paths"].as_dict(),
             }
@@ -182,7 +176,6 @@ def run(
         "output_dir": str(output_dir),
         "input_paths": [str(p) for p in paths],
         "n_runs": collection.manifest["n_runs"],
-        "mock_status": collection.manifest["mock_status"],
         "routing_modes": collection.manifest["routing_modes"],
         "requested_figures": wanted,
         "generated": generated,
@@ -198,8 +191,7 @@ def run(
         print("HEADLINE ANALYSIS")
         print("=" * 78)
         for entry in generated:
-            marker = " (diagnostic only)" if entry["diagnostic_only"] else ""
-            print(f"  generated  Figure {entry['figure']}: {entry['name']}{marker}")
+            print(f"  generated  Figure {entry['figure']}: {entry['name']}")
             print(f"             {entry['outputs']['png']}")
         for entry in skipped:
             print(f"  SKIPPED    Figure {entry['figure']}: {entry['name']}")
@@ -225,7 +217,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         choices=list(ALL_FIGURES),
         help="Figures to attempt (default: all).",
     )
-    parser.add_argument("--allow-mock", action="store_true", help="Permit mock runs, marked diagnostic.")
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -250,7 +241,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.run_dirs,
             args.output,
             figures=args.figures,
-            allow_mock=args.allow_mock,
             strict=args.strict,
             repetitions=args.bootstrap_repetitions,
             analysis_seed=args.analysis_seed,

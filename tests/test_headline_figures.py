@@ -30,7 +30,7 @@ EXAMPLES = ("a", "b", "c")
 def collected(tmp_path: Path, builder) -> Path:
     root = tmp_path / "runs"
     builder(root)
-    collect([root], tmp_path / "artifacts", allow_mock=True, quiet=True)
+    collect([root], tmp_path / "artifacts", quiet=True)
     return tmp_path / "artifacts"
 
 
@@ -66,7 +66,7 @@ def test_figure1_computes_the_accuracy_points(tmp_path: Path) -> None:
             attack_value=5,
         )
 
-    result = figure1.build_figure(collected(tmp_path, builder), allow_mock=True, repetitions=200)
+    result = figure1.build_figure(collected(tmp_path, builder), repetitions=200)
     table = result["table"].set_index("adversarial_fraction")
 
     assert table.loc[0.0, "mean_accuracy"] == pytest.approx(1.0)
@@ -85,7 +85,7 @@ def test_figure1_uses_the_clean_arm_as_the_zero_point(tmp_path: Path) -> None:
         )
 
     table = figure1.build_figure(
-        collected(tmp_path, builder), allow_mock=True, repetitions=100
+        collected(tmp_path, builder), repetitions=100
     )["table"]
 
     assert sorted(table["adversarial_fraction"].unique()) == [0.0, 0.25, 0.5]
@@ -97,7 +97,7 @@ def test_figure1_refuses_a_single_fraction(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, lambda root: make_pear_run(root, "clean"))
 
     with pytest.raises(FigureError, match="clean 0.0 arm and at least one attacked"):
-        figure1.build_figure(analysis_dir, allow_mock=True)
+        figure1.build_figure(analysis_dir)
 
 
 def test_figure1_includes_a_method_without_routing(tmp_path: Path) -> None:
@@ -106,7 +106,7 @@ def test_figure1_includes_a_method_without_routing(tmp_path: Path) -> None:
         make_generic_run(root, "gen_attacked", examples=EXAMPLES, adversarial_fraction=0.5)
 
     table = figure1.build_figure(
-        collected(tmp_path, builder), allow_mock=True, repetitions=100
+        collected(tmp_path, builder), repetitions=100
     )["table"]
 
     assert set(table["method"]) == {"single_agent_baseline"}
@@ -128,7 +128,7 @@ def test_figure1_keeps_datasets_apart(tmp_path: Path) -> None:
             )
 
     table = figure1.build_figure(
-        collected(tmp_path, builder), allow_mock=True, repetitions=100
+        collected(tmp_path, builder), repetitions=100
     )["table"]
 
     assert sorted(table["dataset"].unique()) == ["bench_a", "bench_b"]
@@ -140,7 +140,7 @@ def test_figure2_pairs_arms_and_finds_the_best_report(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, full_sweep)
 
     result = figure2.build_figure(
-        analysis_dir, w_rho=1.0, w_adoption=1.0, allow_mock=True, repetitions=200
+        analysis_dir, w_rho=1.0, w_adoption=1.0, repetitions=200
     )
     table = result["table"]
 
@@ -159,7 +159,7 @@ def test_figure2_records_the_utility_weights(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, full_sweep)
 
     result = figure2.build_figure(
-        analysis_dir, w_rho=2.0, w_adoption=0.5, allow_mock=True, repetitions=100
+        analysis_dir, w_rho=2.0, w_adoption=0.5, repetitions=100
     )
 
     assert (result["table"]["w_rho"] == 2.0).all()
@@ -170,17 +170,17 @@ def test_figure2_records_the_utility_weights(tmp_path: Path) -> None:
     assert metadata["w_adoption"] == 0.5
     assert metadata["penalty_note"].startswith("P_i = 0")
     assert "not exact or universal" in metadata["not"]
-    assert len(metadata["limitations"]) >= 4
+    assert len(metadata["limitations"]) >= 3
 
 
 def test_figure2_weights_change_the_gain(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, full_sweep)
 
     single = figure2.build_figure(
-        analysis_dir, w_rho=1.0, w_adoption=0.0, allow_mock=True, repetitions=100
+        analysis_dir, w_rho=1.0, w_adoption=0.0, repetitions=100
     )["table"]
     double = figure2.build_figure(
-        analysis_dir, w_rho=2.0, w_adoption=0.0, allow_mock=True, repetitions=100
+        analysis_dir, w_rho=2.0, w_adoption=0.0, repetitions=100
     )["table"]
 
     assert double["utility_gain"].sum() == pytest.approx(2 * single["utility_gain"].sum())
@@ -204,7 +204,7 @@ def test_figure2_refuses_unmatched_coverage(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, builder)
 
     with pytest.raises(FigureError) as excinfo:
-        figure2.build_figure(analysis_dir, w_rho=1.0, w_adoption=1.0, allow_mock=True)
+        figure2.build_figure(analysis_dir, w_rho=1.0, w_adoption=1.0)
 
     assert "not paired" in str(excinfo.value)
 
@@ -220,7 +220,7 @@ def test_figure2_refuses_multiple_attackers(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, builder)
 
     with pytest.raises(FigureError, match="exactly one confidence attacker"):
-        figure2.build_figure(analysis_dir, w_rho=1.0, w_adoption=1.0, allow_mock=True)
+        figure2.build_figure(analysis_dir, w_rho=1.0, w_adoption=1.0)
 
 
 def test_figure2_names_the_missing_report_values(tmp_path: Path) -> None:
@@ -234,7 +234,7 @@ def test_figure2_names_the_missing_report_values(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, builder)
 
     with pytest.raises(FigureError, match=r"missing fixed_report values \[3, 4, 5\]"):
-        figure2.build_figure(analysis_dir, w_rho=1.0, w_adoption=1.0, allow_mock=True)
+        figure2.build_figure(analysis_dir, w_rho=1.0, w_adoption=1.0)
 
 
 def test_figure2_adoption_term_uses_the_canonical_parser(tmp_path: Path) -> None:
@@ -255,7 +255,7 @@ def test_figure2_adoption_term_uses_the_canonical_parser(tmp_path: Path) -> None
             )
 
     result = figure2.build_figure(
-        collected(tmp_path, builder), w_rho=0.0, w_adoption=1.0, allow_mock=True, repetitions=100
+        collected(tmp_path, builder), w_rho=0.0, w_adoption=1.0, repetitions=100
     )
     table = result["table"].set_index("report_value")
 
@@ -273,7 +273,7 @@ def test_figure2_missing_history_is_not_zero_utility(tmp_path: Path) -> None:
     results.to_csv(results_path, index=False)
 
     with pytest.raises(FigureError, match="Missing history is not zero utility"):
-        figure2.build_figure(analysis_dir, w_rho=1.0, w_adoption=1.0, allow_mock=True)
+        figure2.build_figure(analysis_dir, w_rho=1.0, w_adoption=1.0)
 
 
 # =============================================================== figure 4 ==
@@ -282,7 +282,7 @@ def test_figure4_includes_a_generic_competitor(tmp_path: Path) -> None:
         make_pear_run(root, "pear_clean", examples=EXAMPLES, rounds=1)
         make_generic_run(root, "competitor", examples=EXAMPLES, prompt_tokens=300, completion_tokens=60)
 
-    result = figure4.build_figure(collected(tmp_path, builder), allow_mock=True, repetitions=100)
+    result = figure4.build_figure(collected(tmp_path, builder), repetitions=100)
     table = result["table"].set_index("method")
 
     assert set(table.index) == {"pear", "single_agent_baseline"}
@@ -296,7 +296,7 @@ def test_figure4_excludes_methods_without_token_usage(tmp_path: Path) -> None:
         make_pear_run(root, "pear_clean", examples=EXAMPLES)
         make_generic_run(root, "competitor", examples=EXAMPLES, include_tokens=False)
 
-    result = figure4.build_figure(collected(tmp_path, builder), allow_mock=True, repetitions=100)
+    result = figure4.build_figure(collected(tmp_path, builder), repetitions=100)
 
     assert set(result["table"]["method"]) == {"pear"}
     assert result["excluded"] == [
@@ -319,7 +319,7 @@ def test_figure4_keeps_a_clean_verified_condition(tmp_path: Path) -> None:
         make_pear_run(root, "verified", examples=EXAMPLES, verification_mode="oracle")
 
     table = figure4.build_figure(
-        collected(tmp_path, builder), allow_mock=True, repetitions=100
+        collected(tmp_path, builder), repetitions=100
     )["table"]
 
     assert sorted(table["verification_mode"].unique()) == ["none", "oracle"]
@@ -332,7 +332,7 @@ def test_figure4_needs_a_clean_arm(tmp_path: Path) -> None:
     )
 
     with pytest.raises(FigureError, match="no clean"):
-        figure4.build_figure(analysis_dir, allow_mock=True)
+        figure4.build_figure(analysis_dir)
 
 
 def test_figure4_refuses_when_nothing_is_priced(tmp_path: Path) -> None:
@@ -341,7 +341,7 @@ def test_figure4_refuses_when_nothing_is_priced(tmp_path: Path) -> None:
     )
 
     with pytest.raises(FigureError, match="never a cost of zero"):
-        figure4.build_figure(analysis_dir, allow_mock=True)
+        figure4.build_figure(analysis_dir)
 
 
 # =============================================================== figure 5 ==
@@ -363,7 +363,7 @@ def test_figure5_draws_a_complete_grid(tmp_path: Path) -> None:
     cells = [(0.3, 0.4), (0.3, 0.8), (0.7, 0.4), (0.7, 0.8)]
     analysis_dir = collected(tmp_path, grid_builder(cells))
 
-    result = figure5.build_figure(analysis_dir, metric="accuracy", allow_mock=True)
+    result = figure5.build_figure(analysis_dir, metric="accuracy")
 
     assert len(result["table"]) == 4
     assert sorted(result["table"]["routing_temperature"].unique()) == [0.3, 0.7]
@@ -377,14 +377,14 @@ def test_figure5_refuses_an_incomplete_grid(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, grid_builder([(0.3, 0.4), (0.3, 0.8), (0.7, 0.4)]))
 
     with pytest.raises(FigureError, match="complete grid of at least 2 x 2"):
-        figure5.build_figure(analysis_dir, metric="accuracy", allow_mock=True)
+        figure5.build_figure(analysis_dir, metric="accuracy")
 
 
 def test_figure5_refuses_a_one_by_two_grid(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, grid_builder([(0.7, 0.4), (0.7, 0.8)]))
 
     with pytest.raises(FigureError, match="2 x 2"):
-        figure5.build_figure(analysis_dir, metric="accuracy", allow_mock=True)
+        figure5.build_figure(analysis_dir, metric="accuracy")
 
 
 def test_figure5_robustness_gap_needs_matched_arms(tmp_path: Path) -> None:
@@ -392,7 +392,7 @@ def test_figure5_robustness_gap_needs_matched_arms(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, grid_builder(cells))
 
     with pytest.raises(FigureError, match="matched clean and attacked"):
-        figure5.build_figure(analysis_dir, metric="robustness_gap", allow_mock=True)
+        figure5.build_figure(analysis_dir, metric="robustness_gap")
 
 
 def test_figure5_robustness_gap_on_matched_arms(tmp_path: Path) -> None:
@@ -420,9 +420,7 @@ def test_figure5_robustness_gap_on_matched_arms(tmp_path: Path) -> None:
                     alpha_influence=alpha,
                 )
 
-    result = figure5.build_figure(
-        collected(tmp_path, builder), metric="robustness_gap", allow_mock=True
-    )
+    result = figure5.build_figure(collected(tmp_path, builder), metric="robustness_gap")
 
     assert len(result["table"]) == 4
     assert result["table"]["value"].round(4).unique().tolist() == [pytest.approx(0.6667, abs=1e-3)]
@@ -432,7 +430,7 @@ def test_figure5_rejects_an_unknown_metric(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, grid_builder([(0.3, 0.4), (0.7, 0.8)]))
 
     with pytest.raises(FigureError, match="unknown metric"):
-        figure5.build_figure(analysis_dir, metric="vibes", allow_mock=True)
+        figure5.build_figure(analysis_dir, metric="vibes")
 
 
 def test_figure5_ic_regret_requires_figure2_first(tmp_path: Path) -> None:
@@ -440,7 +438,7 @@ def test_figure5_ic_regret_requires_figure2_first(tmp_path: Path) -> None:
     analysis_dir = collected(tmp_path, grid_builder(cells))
 
     with pytest.raises(FigureError, match="Generate Figure 2 first"):
-        figure5.build_figure(analysis_dir, metric="empirical_ic_regret", allow_mock=True)
+        figure5.build_figure(analysis_dir, metric="empirical_ic_regret")
 
 
 # ========================================================= master command ==
@@ -451,7 +449,6 @@ def test_master_generates_available_figures_and_names_the_skips(tmp_path: Path) 
     summary = headline_run(
         [root],
         tmp_path / "artifacts",
-        allow_mock=True,
         w_rho=1.0,
         w_adoption=1.0,
         heatmap_metric="accuracy",
@@ -464,7 +461,6 @@ def test_master_generates_available_figures_and_names_the_skips(tmp_path: Path) 
     assert {1, 2, 3, 4} <= generated
     assert 5 in skipped
     assert "2 x 2" in skipped[5]
-    assert all(entry["diagnostic_only"] for entry in summary["generated"])
     assert (tmp_path / "artifacts" / "readiness.json").is_file()
     assert (tmp_path / "artifacts" / "headline_analysis.json").is_file()
 
@@ -474,7 +470,7 @@ def test_master_can_select_figures(tmp_path: Path) -> None:
     full_sweep(root)
 
     summary = headline_run(
-        [root], tmp_path / "artifacts", figures=[3, 4], allow_mock=True, repetitions=100, quiet=True
+        [root], tmp_path / "artifacts", figures=[3, 4], repetitions=100, quiet=True
     )
 
     assert {entry["figure"] for entry in summary["generated"]} == {3, 4}
@@ -486,7 +482,7 @@ def test_master_requires_utility_weights_for_figure2(tmp_path: Path) -> None:
     full_sweep(root)
 
     summary = headline_run(
-        [root], tmp_path / "artifacts", figures=[2], allow_mock=True, repetitions=100, quiet=True
+        [root], tmp_path / "artifacts", figures=[2], repetitions=100, quiet=True
     )
 
     assert summary["generated"] == []
@@ -498,7 +494,7 @@ def test_master_requires_a_heatmap_metric(tmp_path: Path) -> None:
     full_sweep(root)
 
     summary = headline_run(
-        [root], tmp_path / "artifacts", figures=[5], allow_mock=True, repetitions=100, quiet=True
+        [root], tmp_path / "artifacts", figures=[5], repetitions=100, quiet=True
     )
 
     assert "No metric is selected automatically" in summary["skipped"][0]["reason"]
@@ -511,7 +507,6 @@ def test_master_strict_exits_non_zero(tmp_path: Path) -> None:
         str(root),
         "--output",
         str(tmp_path / "artifacts"),
-        "--allow-mock",
         "--bootstrap-repetitions",
         "100",
         "--heatmap-metric",
@@ -536,7 +531,6 @@ def test_master_prints_skip_reasons(tmp_path: Path, capsys) -> None:
             str(root),
             "--output",
             str(tmp_path / "artifacts"),
-            "--allow-mock",
             "--bootstrap-repetitions",
             "50",
         ]
@@ -549,15 +543,6 @@ def test_master_prints_skip_reasons(tmp_path: Path, capsys) -> None:
     assert "SKIPPED    Figure 1" in out
 
 
-def test_master_refuses_mock_without_the_flag(tmp_path: Path) -> None:
-    root = tmp_path / "runs"
-    full_sweep(root)
-
-    code = headline_main([str(root), "--output", str(tmp_path / "artifacts")])
-
-    assert code == 2
-
-
 def test_master_keeps_a_no_routing_competitor_usable(tmp_path: Path) -> None:
     def builder(root: Path) -> None:
         make_generic_run(root, "gen_clean", examples=EXAMPLES, adversarial_fraction=0.0)
@@ -567,7 +552,7 @@ def test_master_keeps_a_no_routing_competitor_usable(tmp_path: Path) -> None:
     builder(root)
 
     summary = headline_run(
-        [root], tmp_path / "artifacts", allow_mock=True, repetitions=100, quiet=True
+        [root], tmp_path / "artifacts", repetitions=100, quiet=True
     )
 
     generated = {entry["figure"] for entry in summary["generated"]}
