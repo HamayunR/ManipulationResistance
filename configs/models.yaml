@@ -19,6 +19,24 @@ models:
     max_tokens: 512
     max_tokens_param: max_completion_tokens
 
+  # Local, on-device, Apple Silicon GPU via MLX. This is the Metal path: vLLM
+  # has no Metal backend, and its gpu_memory_utilization / tensor_parallel_size
+  # knobs are CUDA concepts that do not apply here.
+  #
+  # 4-bit weights are ~4.3 GB, measured 4.4 GB peak including the KV cache, so
+  # it fits a 16 GB machine with headroom. Expect ~8-15 tok/s on an M4; a
+  # 5-agent 3-round debate is minutes per example, not seconds.
+  #
+  # The checkpoint must be MLX-format (the mlx-community repos carry an
+  # MLX-specific quantization block). A stock HF checkpoint will not load
+  # here -- use provider: hf for those.
+  qwen2.5-7b-mlx:
+    provider: mlx
+    model: mlx-community/Qwen2.5-7B-Instruct-4bit
+    temperature: 0.2
+    max_tokens: 512
+    # max_kv_size: 4096   # uncomment to bound KV memory on long transcripts
+
   # Local, on-device. Small enough for Apple Silicon unified memory: fp16
   # weights are ~1 GB, so it runs on an M-series laptop with no GPU server and
   # no API cost. Intended for pipeline development and debugging -- at 0.5B the

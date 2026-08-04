@@ -119,6 +119,10 @@ def build_llm(
         from models.model import HFLLM
 
         llm = HFLLM(**config)
+    elif provider == "mlx":
+        from models.model import MLXLLM
+
+        llm = MLXLLM(**config)
     elif provider == "vllm":
         from models.model import VLLMLLM
 

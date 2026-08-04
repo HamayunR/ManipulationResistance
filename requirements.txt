@@ -23,3 +23,8 @@ matplotlib>=3.7
 # used for device placement on non-MPS devices. Not needed for API or vLLM runs.
 #   pip install torch transformers accelerate
 torch>=2.2
+
+# Apple Silicon GPU backend (provider: mlx), e.g. qwen2.5-7b-mlx. macOS
+# arm64 only -- these wheels do not exist on Linux/CUDA, so they are not
+# installed by default.
+#   pip install mlx mlx-lm

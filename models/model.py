@@ -389,6 +389,113 @@ class HFLLM(BaseLLM):
         )
 
 
+class MLXLLM(BaseLLM):
+    """Apple-Silicon backend via MLX, for quantised local models.
+
+    This is the Metal path on a Mac. vLLM is not: it has no Metal backend, and
+    its ``gpu_memory_utilization`` / ``tensor_parallel_size`` knobs are CUDA
+    concepts with no meaning here. MLX runs on the unified-memory GPU directly,
+    so a 4-bit 7B checkpoint (~4.3 GB of weights) fits on a 16 GB laptop with
+    room for the KV cache.
+
+    Point ``model`` at an MLX-format checkpoint -- the ``mlx-community`` repos
+    carry an MLX-specific ``quantization`` block that no other runtime reads.
+    A stock Hugging Face checkpoint will not load here; use ``provider: hf``
+    for those.
+
+    Parameters
+    ----------
+    model:
+        MLX checkpoint on the Hub or a local path.
+    temperature:
+        Sampling temperature. ``0.0`` is greedy, which is what the debate's
+        seeding assumes when a condition wants determinism.
+    max_tokens:
+        Default completion cap; overridden per call by the runner's
+        ``debate.max_tokens_per_call``.
+    max_kv_size:
+        Optional rotating KV-cache bound. Caps memory on long transcripts at
+        the cost of forgetting the earliest tokens; leave unset to keep the
+        full context.
+    """
+
+    name = "mlx"
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 512,
+        max_kv_size: Optional[int] = None,
+        **gen_kwargs: Any,
+    ) -> None:
+        try:
+            from mlx_lm import generate as _generate, load as _load  # type: ignore
+            from mlx_lm.sample_utils import make_sampler  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional extra
+            raise ImportError(
+                "mlx-lm is required for the mlx provider (Apple Silicon only). "
+                "Install with `pip install mlx mlx-lm`."
+            ) from exc
+
+        self._generate = _generate
+        self._make_sampler = make_sampler
+        self._model_obj, self._tokenizer = _load(model)
+        self._temperature = temperature
+        self._max_tokens = max_tokens
+        self._max_kv_size = max_kv_size
+        self._extra = gen_kwargs
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        system: Optional[str] = None,
+        agent_id: Optional[int] = None,
+    ) -> Generation:
+        """Complete one prompt, applying the checkpoint's chat template."""
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        try:
+            full_prompt = self._tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        except Exception:  # pragma: no cover - checkpoint without a template
+            full_prompt = (system + "\n\n" + prompt) if system else prompt
+
+        sampler = self._make_sampler(
+            temp=self._temperature if temperature is None else temperature
+        )
+        kwargs: Dict[str, Any] = dict(self._extra)
+        if self._max_kv_size is not None:
+            kwargs["max_kv_size"] = self._max_kv_size
+
+        text = self._generate(
+            self._model_obj,
+            self._tokenizer,
+            prompt=full_prompt,
+            max_tokens=self._max_tokens if max_tokens is None else max_tokens,
+            sampler=sampler,
+            verbose=False,
+            **kwargs,
+        )
+
+        # Best-effort counts: mlx_lm returns the completion string only.
+        prompt_tokens = len(self._tokenizer.encode(full_prompt))
+        completion_tokens = len(self._tokenizer.encode(text)) if text else 0
+        return Generation(
+            text=text,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            raw=None,
+        )
+
+
 class VLLMLLM(BaseLLM):
     """vLLM offline-inference backend for local checkpoints.
 
